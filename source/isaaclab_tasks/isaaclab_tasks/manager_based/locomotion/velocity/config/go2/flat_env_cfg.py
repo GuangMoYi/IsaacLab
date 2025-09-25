@@ -7,6 +7,13 @@ from isaaclab.utils import configclass
 
 from .rough_env_cfg import UnitreeGo2RoughEnvCfg
 
+import isaacsim.core.utils.prims as prim_utils
+
+import isaaclab.sim as sim_utils
+import isaaclab.utils.math as math_utils
+from isaaclab.assets import RigidObject, RigidObjectCfg
+from isaaclab.sim import SimulationContext
+
 
 @configclass
 class UnitreeGo2FlatEnvCfg(UnitreeGo2RoughEnvCfg):
@@ -21,12 +28,20 @@ class UnitreeGo2FlatEnvCfg(UnitreeGo2RoughEnvCfg):
         # change terrain to flat
         self.scene.terrain.terrain_type = "plane"
         self.scene.terrain.terrain_generator = None
-        # no height scan
+        
+        # # no height scan
         self.scene.height_scanner = None
         self.observations.policy.height_scan = None
         # no terrain curriculum
         self.curriculum.terrain_levels = None
 
+        # # GMY
+        # 创建一个平台
+        self.scene.platform.spawn.semantic_tags = [("class", "platform")]
+        # 增加机器人之间空间
+        self.scene.env_spacing = 300
+
+        
 
 class UnitreeGo2FlatEnvCfg_PLAY(UnitreeGo2FlatEnvCfg):
     def __post_init__(self) -> None:

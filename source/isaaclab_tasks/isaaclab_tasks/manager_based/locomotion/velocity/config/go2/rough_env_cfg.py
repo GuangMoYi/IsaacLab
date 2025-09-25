@@ -12,30 +12,38 @@ from isaaclab_tasks.manager_based.locomotion.velocity.velocity_env_cfg import Lo
 ##
 from isaaclab_assets.robots.unitree import UNITREE_GO2_CFG  # isort: skip
 
+# GMY
+from isaaclab_assets.robots.unitree import DeepRobotic_X30_CFG
 
 @configclass
-class UnitreeGo2RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
+class UnitreeGo2RoughEnvCfg(LocomotionVelocityRoughEnvCfg):   
     def __post_init__(self):
         # post init of parent
         super().__post_init__()
 
         self.scene.robot = UNITREE_GO2_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+
+        # GMY 替换机器人只需要改一个代码
+        # self.scene.robot = DeepRobotic_X30_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+
+        # 传感器设置
         self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/base"
-        # scale down the terrains because the robot is small
+
+        # 设置地形： boxes的高度；地形随机粗糙random_rough范围；地形变化步长
         self.scene.terrain.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.025, 0.1)
         self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_range = (0.01, 0.06)
         self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
 
-        # reduce action scale
+        # 关节动作比例：减小动作
         self.actions.joint_pos.scale = 0.25
 
-        # event
+        # 事件
         self.events.push_robot = None
-        self.events.add_base_mass.params["mass_distribution_params"] = (-1.0, 3.0)
+        self.events.add_base_mass.params["mass_distribution_params"] = (-1.0, 3.0)          # 底座质量范围
         self.events.add_base_mass.params["asset_cfg"].body_names = "base"
-        self.events.base_external_force_torque.params["asset_cfg"].body_names = "base"
-        self.events.reset_robot_joints.params["position_range"] = (1.0, 1.0)
-        self.events.reset_base.params = {
+        self.events.base_external_force_torque.params["asset_cfg"].body_names = "base"      # 增加底座受力
+        self.events.reset_robot_joints.params["position_range"] = (1.0, 1.0)                # 复位时关节位置
+        self.events.reset_base.params = {                                                   # 复位时初始状态范围
             "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
             "velocity_range": {
                 "x": (0.0, 0.0),
@@ -47,7 +55,7 @@ class UnitreeGo2RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             },
         }
 
-        # rewards
+        # 奖励函数
         self.rewards.feet_air_time.params["sensor_cfg"].body_names = ".*_foot"
         self.rewards.feet_air_time.weight = 0.01
         self.rewards.undesired_contacts = None
@@ -56,8 +64,9 @@ class UnitreeGo2RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.track_ang_vel_z_exp.weight = 0.75
         self.rewards.dof_acc_l2.weight = -2.5e-7
 
-        # terminations
+        # 终止条件
         self.terminations.base_contact.params["sensor_cfg"].body_names = "base"
+
 
 
 @configclass

@@ -241,53 +241,51 @@ class EventTermCfg(ManagerTermBaseCfg):
     """Configuration for a event term."""
 
     func: Callable[..., None] = MISSING
-    """The name of the function to be called.
+    """  指定要调用的函数
+    这个函数接收环境对象、环境索引和其他参数作为输入
 
-    This function should take the environment object, environment indices
-    and any other parameters as input.
+    当事件触发时，这个函数会被执行
+
+    必须指定一个有效的函数，否则会报错(MISSING表示必须提供)
     """
 
     mode: str = MISSING
-    """The mode in which the event term is applied.
+    """  定义事件触发的模式
+    必须指定一个有效的模式字符串
 
-    Note:
-        The mode name ``"interval"`` is a special mode that is handled by the
-        manager Hence, its name is reserved and cannot be used for other modes.
+    不同的模式决定了事件如何被触发和执行
+
+    保留模式"interval"有特殊处理方式
     """
 
     interval_range_s: tuple[float, float] | None = None
-    """The range of time in seconds at which the term is applied. Defaults to None.
+    """  定义事件触发的时间间隔范围(秒)
 
-    Based on this, the interval is sampled uniformly between the specified
-    range for each environment instance. The term is applied on the environment
-    instances where the current time hits the interval time.
+    仅在模式为"interval"时使用
 
-    Note:
-        This is only used if the mode is ``"interval"``.
+    指定一个时间范围(如(5.0, 10.0))，系统会在这个范围内均匀采样确定触发间隔
+
+    如果为None，则不会基于时间间隔触发
     """
 
     is_global_time: bool = False
-    """Whether randomization should be tracked on a per-environment basis. Defaults to False.
+    """  控制时间随机化是否在所有环境实例间共享
 
-    If True, the same interval time is used for all the environment instances.
-    If False, the interval time is sampled independently for each environment instance
-    and the term is applied when the current time hits the interval time for that instance.
+    仅在模式为"interval"时使用
 
-    Note:
-        This is only used if the mode is ``"interval"``.
+    True: 所有环境实例使用相同的时间间隔
+
+    False(默认): 每个环境实例独立采样时间间隔
     """
 
     min_step_count_between_reset: int = 0
-    """The number of environment steps after which the term is applied since its last application. Defaults to 0.
+    """  定义在"reset"模式下，两次事件触发间的最小步数
 
-    When the mode is "reset", the term is only applied if the number of environment steps since
-    its last application exceeds this quantity. This helps to avoid calling the term too often,
-    thereby improving performance.
+    仅在模式为"reset"时使用
 
-    If the value is zero, the term is applied on every call to the manager with the mode "reset".
+    设置为0表示每次调用manager时都会触发事件
 
-    Note:
-        This is only used if the mode is ``"reset"``.
+    大于0的值可以防止事件触发过于频繁，提高性能
     """
 
 

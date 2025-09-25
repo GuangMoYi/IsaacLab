@@ -443,6 +443,46 @@ def euler_xyz_from_quat(quat: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor,
 
     return roll % (2 * torch.pi), pitch % (2 * torch.pi), yaw % (2 * torch.pi)  # TODO: why not wrap_to_pi here ?
 
+# GMY
+@torch.jit.script
+def euler_zyx_from_quat(quat: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Convert quaternion to Euler angles using ZYX convention (yaw-pitch-roll).
+    quat: (N, 4) in (w, x, y, z) format
+    returns: roll-pitch-yaw (each shape: (N,))
+    """
+    q_w, q_x, q_y, q_z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+
+    # Rotation matrix components
+    R_11 = 1 - 2 * (q_y * q_y + q_z * q_z)
+    R_12 = 2 * (q_x * q_y - q_z * q_w)
+    R_13 = 2 * (q_x * q_z + q_y * q_w)
+    R_21 = 2 * (q_x * q_y + q_z * q_w)
+    R_22 = 1 - 2 * (q_x * q_x + q_z * q_z)
+    R_23 = 2 * (q_y * q_z - q_x * q_w)
+    R_31 = 2 * (q_x * q_z - q_y * q_w)
+    R_32 = 2 * (q_y * q_z + q_x * q_w)
+    R_33 = 1 - 2 * (q_x * q_x + q_y * q_y)
+
+    # Extract ZYX Euler angles
+    # pitch (theta)
+    pitch = torch.asin(torch.clamp(-R_31, -1.0, 1.0))
+
+    # Check for gimbal lock (cos(theta) ~ 0)
+    near_gimbal_lock = torch.abs(torch.abs(R_31) - 1.0) < 1e-6
+
+    # yaw and roll normally
+    yaw = torch.atan2(R_21, R_11)
+    roll = torch.atan2(R_32, R_33)
+
+    # For gimbal lock, set yaw = 0, compute roll from R_12 and R_13
+    yaw = torch.where(near_gimbal_lock, torch.zeros_like(yaw), yaw)
+    roll = torch.where(near_gimbal_lock, torch.atan2(-R_12, R_13), roll)
+
+    return roll, pitch, yaw
+
+
+
 
 @torch.jit.script
 def quat_unique(q: torch.Tensor) -> torch.Tensor:

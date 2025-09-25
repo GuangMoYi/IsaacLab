@@ -134,7 +134,10 @@ UNITREE_GO1_CFG = ArticulationCfg(
 )
 """Configuration of Unitree Go1 using MLP-based actuator model."""
 
+# usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Robots/Unitree/Go2/go2.usd",
 
+# GMY
+# usd_path="/home/gm/IsaacLab/scripts/reinforcement_learning/rsl_rl/urdf_convert/go2/go2.usd",
 UNITREE_GO2_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Robots/Unitree/Go2/go2.usd",
@@ -153,7 +156,7 @@ UNITREE_GO2_CFG = ArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.4),
+        pos=(0.0, 0.0, 0.4),        # GMY: pos=(0.0, 0.0, 0.4),
         joint_pos={
             ".*L_hip_joint": 0.1,
             ".*R_hip_joint": -0.1,
@@ -176,6 +179,140 @@ UNITREE_GO2_CFG = ArticulationCfg(
         ),
     },
 )
+
+"""GMY: 云深处lite3的配置"""
+DeepRobotic_LITE3_CFG = ArticulationCfg(
+    spawn=sim_utils.UsdFileCfg(
+        usd_path="/home/gm/IsaacLab/scripts/reinforcement_learning/rsl_rl/urdf_convert/lite3/lite3.usd",
+        activate_contact_sensors=True,
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            disable_gravity=False,
+            retain_accelerations=False,
+            linear_damping=0.0,
+            angular_damping=0.0,
+            max_linear_velocity=1000.0,
+            max_angular_velocity=1000.0,
+            max_depenetration_velocity=1.0,
+        ),
+        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            enabled_self_collisions=False, solver_position_iteration_count=4, solver_velocity_iteration_count=0
+        ),
+    ),
+    init_state=ArticulationCfg.InitialStateCfg(
+        pos=(0.0, 0.0, 0.4),        # GMY: pos=(0.0, 0.0, 0.4),
+        joint_pos={
+            ".*L_HipX_joint": 0.1,
+            ".*R_HipX_joint": -0.1,
+            "F[L,R]_HipY_joint": -0.8,
+            "H[L,R]_HipY_joint": -1.0,
+            ".*_Knee_joint": 1.5,
+        },
+        joint_vel={".*": 0.0},
+    ),
+    soft_joint_pos_limit_factor=0.9,
+    actuators={
+        "base_legs": DCMotorCfg(
+            joint_names_expr=[".*_HipX_joint", ".*_HipY_joint", ".*_Knee_joint"],
+            effort_limit=30,
+            saturation_effort=30,
+            velocity_limit=20,
+            stiffness=25.0,
+            damping=0.5,
+            friction=0.0,
+        ),
+    },
+)
+
+"""GMY: 云深处X30的配置"""
+DeepRobotic_X30_CFG = ArticulationCfg(
+    spawn=sim_utils.UsdFileCfg(
+        usd_path="/home/gm/IsaacLab/scripts/reinforcement_learning/rsl_rl/urdf_convert/x30/x30.usd",
+        activate_contact_sensors=True,
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            disable_gravity=False,
+            retain_accelerations=False,
+            linear_damping=0.0,
+            angular_damping=0.0,
+            max_linear_velocity=1000.0,
+            max_angular_velocity=1000.0,
+            max_depenetration_velocity=1.0,
+        ),
+        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            enabled_self_collisions=False, solver_position_iteration_count=4, solver_velocity_iteration_count=0
+        ),
+        # collision_props=sim_utils.CollisionPropertiesCfg(
+        #     collision_group=-1,  # 默认碰撞组（不与平台组2碰撞）
+        #     filter_mask=~(1 << 2),  # 掩码排除平台组（二进制第2位设为0）
+        # ),
+    ),
+    init_state=ArticulationCfg.InitialStateCfg(
+        pos=(0.0, 0.0, 0.6),        
+        joint_pos={
+            ".*L_HipX_joint": 0.1,
+            ".*R_HipX_joint": -0.1,
+            "F[L,R]_HipY_joint": -0.5,
+            "H[L,R]_HipY_joint": -0.7,
+            ".*_Knee_joint": 1.2,
+        },
+        joint_vel={".*": 0.0},
+    ),
+    soft_joint_pos_limit_factor=0.9,
+    actuators={
+        "base_legs": DCMotorCfg(
+            joint_names_expr=[".*_HipX_joint", ".*_HipY_joint", ".*_Knee_joint"],
+            effort_limit=84,        # 84
+            saturation_effort=84,
+            velocity_limit=17.5,    # 30.0
+            stiffness=150,          # 17.5   150  P gain
+            damping=2.5,            # 0.5    1.5 D gain
+            friction=0.0,          # 0.0
+        ),
+    },
+)
+
+# UNITREE_A1_CFG = ArticulationCfg(
+#     spawn=sim_utils.UsdFileCfg(
+#         usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Robots/Unitree/A1/a1.usd",
+#         activate_contact_sensors=True,
+#         rigid_props=sim_utils.RigidBodyPropertiesCfg(
+#             disable_gravity=False,
+#             retain_accelerations=False,
+#             linear_damping=0.0,
+#             angular_damping=0.0,
+#             max_linear_velocity=1000.0,
+#             max_angular_velocity=1000.0,
+#             max_depenetration_velocity=1.0,
+#         ),
+#         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+#             enabled_self_collisions=False, solver_position_iteration_count=4, solver_velocity_iteration_count=0
+#         ),
+#     ),
+#     init_state=ArticulationCfg.InitialStateCfg(
+#         pos=(0.0, 0.0, 0.42),
+#         joint_pos={
+#             ".*L_hip_joint": 0.1,
+#             ".*R_hip_joint": -0.1,
+#             "F[L,R]_thigh_joint": 0.8,
+#             "R[L,R]_thigh_joint": 1.0,
+#             ".*_calf_joint": -1.5,
+#         },
+#         joint_vel={".*": 0.0},
+#     ),
+#     soft_joint_pos_limit_factor=0.9,
+#     actuators={
+#         "base_legs": DCMotorCfg(
+#             joint_names_expr=[".*_hip_joint", ".*_thigh_joint", ".*_calf_joint"],
+#             effort_limit=33.5,
+#             saturation_effort=33.5,
+#             velocity_limit=21.0,
+#             stiffness=25.0,
+#             damping=0.5,
+#             friction=0.0,
+#         ),
+#     },
+# )
+
+
 """Configuration of Unitree Go2 using DC-Motor actuator model."""
 
 

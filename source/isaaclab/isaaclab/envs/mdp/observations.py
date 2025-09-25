@@ -42,6 +42,54 @@ def base_lin_vel(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCf
     # extract the used quantities (to enable type-hinting)
     asset: RigidObject = env.scene[asset_cfg.name]
     return asset.data.root_lin_vel_b
+def robot_ang_acc_w(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """Robot angle acceleration in the asset's world frame."""
+    # extract the used quantities (to enable type-hinting)
+    asset: RigidObject = env.scene[asset_cfg.name]
+    return asset.data.body_ang_acc_w[:, 0]
+def robot_lin_acc_w(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """Robot linear acceleration in the asset's world frame."""
+    # extract the used quantities (to enable type-hinting)
+    asset: RigidObject = env.scene[asset_cfg.name]
+    return asset.data.body_lin_acc_w[:, 0]
+
+# GMY
+def platform_ang_acc_w(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("platform")) -> torch.Tensor:
+    """Platform angle acceleration in the asset's world frame."""
+    # extract the used quantities (to enable type-hinting)
+    asset: RigidObject = env.scene[asset_cfg.name]
+    return asset.data.body_ang_acc_w[:, 0]
+def platform_lin_acc_w(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("platform")) -> torch.Tensor:
+    """Platform linear acceleration in the asset's world frame."""
+    # extract the used quantities (to enable type-hinting)
+    asset: RigidObject = env.scene[asset_cfg.name]
+    return asset.data.body_lin_acc_w[:, 0]
+def platform_lin_vel_w(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("platform")) -> torch.Tensor:
+    """Platform linear velocity in the asset's root frame."""
+    # extract the used quantities (to enable type-hinting)
+    asset: RigidObject = env.scene[asset_cfg.name]
+    return asset.data.root_lin_vel_w
+def platform_ang_vel_w(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("platform")) -> torch.Tensor:
+    """Platform angular velocity in the asset's root frame."""
+    # extract the used quantities (to enable type-hinting)
+    asset: RigidObject = env.scene[asset_cfg.name]
+    return asset.data.root_ang_vel_w
+def platform_pos_w(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("platform")) -> torch.Tensor:
+    """Platform Position in the asset's world frame."""
+    # extract the used quantities (to enable type-hinting)
+    asset: RigidObject = env.scene[asset_cfg.name]
+    return asset.data.root_pos_w
+
+from isaaclab.utils.math import euler_xyz_from_quat
+def platform_ang_w(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("platform")) -> torch.Tensor:
+    """Platform Angle in the asset's world frame."""
+    asset: RigidObject = env.scene[asset_cfg.name]
+    roll, pitch, yaw = euler_xyz_from_quat(asset.data.root_quat_w)
+    return torch.stack([roll, pitch, yaw], dim=-1).to(
+        device=asset.data.root_quat_w.device,
+        dtype=asset.data.root_quat_w.dtype,
+    )
+
 
 
 def base_ang_vel(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:

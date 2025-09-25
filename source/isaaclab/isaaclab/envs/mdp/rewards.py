@@ -86,6 +86,16 @@ def ang_vel_xy_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntit
     asset: RigidObject = env.scene[asset_cfg.name]
     return torch.sum(torch.square(asset.data.root_ang_vel_b[:, :2]), dim=1)
 
+def base_ang_acc_xy_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """Penalize xy-axis base angular acceleration using L2 squared kernel.
+    
+    计算基座在 xy z轴（翻滚/俯仰方向）的角加速度平方和，用于限制机器人基座的剧烈角加速度变化。
+    """
+    # 提取资产对象（确保类型提示）
+    asset: RigidObject = env.scene[asset_cfg.name]
+    # 计算 xy 轴角加速度的 L2 平方和（dim=1 对每个环境的两个轴求和）
+    return torch.sum(torch.square(asset.data.body_ang_acc_w[:, 0, :3]), dim=1)
+
 
 def flat_orientation_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """Penalize non-flat base orientation using L2 squared kernel.
