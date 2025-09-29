@@ -34,6 +34,91 @@ from isaaclab.envs.utils.io_descriptors import (
     record_shape,
 )
 
+
+# GMY changed: 平台观测量
+from isaaclab.utils.math import euler_xyz_from_quat
+
+# 平台角加速度（世界坐标系）
+@generic_io_descriptor(
+    units="rad/s^2",
+    axes=["X", "Y", "Z"],
+    observation_type="PlatformState",
+    on_inspect=[record_shape, record_dtype],
+)
+def platform_ang_acc_w(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("platform")) -> torch.Tensor:
+    """Platform angular acceleration in the simulation world frame."""
+    asset: RigidObject = env.scene[asset_cfg.name]
+    return asset.data.body_ang_acc_w[:, 0]
+
+
+# 平台线加速度（世界坐标系）
+@generic_io_descriptor(
+    units="m/s^2",
+    axes=["X", "Y", "Z"],
+    observation_type="PlatformState",
+    on_inspect=[record_shape, record_dtype],
+)
+def platform_lin_acc_w(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("platform")) -> torch.Tensor:
+    """Platform linear acceleration in the simulation world frame."""
+    asset: RigidObject = env.scene[asset_cfg.name]
+    return asset.data.body_lin_acc_w[:, 0]
+
+
+# 平台线速度（世界坐标系）
+@generic_io_descriptor(
+    units="m/s",
+    axes=["X", "Y", "Z"],
+    observation_type="PlatformState",
+    on_inspect=[record_shape, record_dtype],
+)
+def platform_lin_vel_w(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("platform")) -> torch.Tensor:
+    """Platform linear velocity in the simulation world frame."""
+    asset: RigidObject = env.scene[asset_cfg.name]
+    return asset.data.root_lin_vel_w
+
+
+# 平台角速度（世界坐标系）
+@generic_io_descriptor(
+    units="rad/s",
+    axes=["X", "Y", "Z"],
+    observation_type="PlatformState",
+    on_inspect=[record_shape, record_dtype],
+)
+def platform_ang_vel_w(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("platform")) -> torch.Tensor:
+    """Platform angular velocity in the simulation world frame."""
+    asset: RigidObject = env.scene[asset_cfg.name]
+    return asset.data.root_ang_vel_w
+
+
+# 平台位置（世界坐标系）
+@generic_io_descriptor(
+    units="m",
+    axes=["X", "Y", "Z"],
+    observation_type="PlatformState",
+    on_inspect=[record_shape, record_dtype],
+)
+def platform_pos_w(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("platform")) -> torch.Tensor:
+    """Platform position in the simulation world frame."""
+    asset: RigidObject = env.scene[asset_cfg.name]
+    return asset.data.root_pos_w
+
+
+# 平台姿态（欧拉角，世界坐标系）
+@generic_io_descriptor(
+    units="rad",
+    axes=["Roll", "Pitch", "Yaw"],
+    observation_type="PlatformState",
+    on_inspect=[record_shape, record_dtype],
+)
+def platform_ang_w(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("platform")) -> torch.Tensor:
+    """Platform orientation (Euler angles) in the simulation world frame."""
+    asset: RigidObject = env.scene[asset_cfg.name]
+    roll, pitch, yaw = euler_xyz_from_quat(asset.data.root_quat_w)
+    return torch.stack([roll, pitch, yaw], dim=-1).to(
+        device=asset.data.root_quat_w.device,
+        dtype=asset.data.root_quat_w.dtype,
+    )
+
 """
 Root state.
 """

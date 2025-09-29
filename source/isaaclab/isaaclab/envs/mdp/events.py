@@ -36,6 +36,458 @@ from isaaclab.utils.version import compare_versions
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
 
+# GMY 
+import math
+def move_velocity(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    velocity_range: dict[str, tuple[float, float]],
+    position_range: dict[str, tuple[float, float]] = {
+        "x": (-1e6, 1e6), 
+        "y": (-1e6, 1e6), 
+        "z": (-1e6, 1e6), 
+        "roll": (-math.pi, math.pi), 
+        "pitch": (-0.5 * math.pi, 0.5 * math.pi), 
+        "yaw": (-math.pi, math.pi) },  # 添加位置范围
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    overwrite_velocity: bool =  False,  # 添加控制参数
+):
+    """  
+        函数作用： 在设置的速度范围内随机抽取某速度以控制刚体运动，并限制刚体运动幅度
+        输入参数：
+            env: ManagerBasedEnv, 环境实例
+            env_ids: torch.Tensor, 环境ID
+            velocity_range: dict[str, tuple[float, float]]  设置速度选取范围{"x":(min, max) , "y", "z", "roll", "pitch", "yaw"}
+            position_range: dict[str, tuple[float, float]]  设置自由度幅度{"x":(min, max), "y", "z", "roll", "pitch", "yaw"}
+            asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),  作用刚体的名称
+            overwrite_velocity: bool =  False,  是否叠加加速度： False 叠加， True 不叠加
+    """
+    
+    range_keys = ["x", "y", "z", "roll", "pitch", "yaw"]
+    asset: RigidObject | Articulation = env.scene[asset_cfg.name]
+    
+    # 读取当前速度
+    vel_w = asset.data.root_vel_w[env_ids]
+    # 采样随机速度
+    range_list = [velocity_range.get(key, (0.0, 0.0)) for key in range_keys]
+    ranges = torch.tensor(range_list, device=asset.device)
+    
+    
+    #-------------------------------------------------------------------------------------------------------# 
+    if not hasattr(env, '_initial_platform_rot'):                           # 初始四元数 [w, x, y, z]
+        setattr(env, '_initial_platform_rot', asset.data.root_quat_w.clone())
+    initial_quat = getattr(env, '_initial_platform_rot')[env_ids]
+    if not hasattr(env, '_initial_platform_pos'):                           # 初始位置 [x, y, z]
+        setattr(env, '_initial_platform_pos', asset.data.root_pos_w.clone()) 
+    initial_pos = getattr(env, '_initial_platform_pos')[env_ids]
+    time = 0.25 * env._sim_step_counter * env.physics_dt           
+    
+    current_quat = asset.data.root_quat_w[env_ids]                          # 读取当前四元数
+    
+        # 计算相对旋转 (current_quat * initial_quat^-1)
+    q_rel = math_utils.quat_mul(current_quat, math_utils.quat_conjugate(initial_quat.clone().detach()))  
+        # 将相对旋转转换为旋转角度（弧度）        
+    rot_angles = torch.stack(math_utils.euler_xyz_from_quat(q_rel), dim=1)  # 读取旋转角度 [roll, pitch, yaw]
+    rot_angles = (rot_angles + math.pi) % (2 * math.pi) - math.pi           # 归一化到 [-pi, pi]： 这是因为有些角度2*pi没法处理
+    
+    current_pos = asset.data.root_pos_w[env_ids]                            # 读取当前位置
+    relative_pos = current_pos - initial_pos
+
+    # 拼接位置和角度
+    pose = torch.cat([relative_pos, rot_angles], dim=1)
+    current_pose = torch.cat([current_pos, torch.stack(math_utils.euler_xyz_from_quat(current_quat), dim=1)], dim=1)
+
+
+    # 读取位置和角度范围
+    position_range_list = [position_range.get(key, (-1e6, 1e6)) for key in range_keys]
+    position_range_list = torch.tensor(position_range_list, device=asset.device)
+
+    # 读取平台的位置和角度
+    platform = env.scene["platform"]
+    platform_pos = platform.data.root_pos_w[env_ids]
+    platform_quat = platform.data.root_quat_w[env_ids]
+    platform_rot = torch.stack(math_utils.euler_xyz_from_quat(platform_quat), dim=1)
+    platform_pose = torch.cat([platform_pos, platform_rot], dim=1) 
+
+    # 计算哪些维度的物体超出范围(与平台的相对位置，注意paltfrom_pose的位置是平台中心的)
+    platform_pose_judge = platform_pose.clone()
+    platform_pose_judge[:, 2] += 0.5 * platform.cfg.spawn.size[2] 
+    too_high = current_pose - platform_pose_judge  >= position_range_list[:, 1]                            # 超过最大值
+    too_low = current_pose - platform_pose_judge <= position_range_list[:, 0]                             # 低于最小值
+
+    # print("[INFO] pose: ", pose)
+    # print("[INFO] platform_pose_judge: ", platform_pose_judge)
+    # print("[INFO] 差值: ", pose - platform_pose_judge)
+
+                                                                            # pose应为[env_num,6]
+                                                                            # position_range_list应为[6,2]
+                                                                            # too_high应为[env_num,6]
+                                                                            # ranges应为[6,2]
+    # 根据 overwrite_velocity 决定是否叠加速度
+    t = torch.tensor(time, device=asset.device) # t 是 float，需要转为 tensor
+    A = ranges[:, 0]    # 振幅 (N,)
+    phi = ranges[:, 1]  # 相位 (N,)
+    T_tmie = 5        # 周期 (s)
+    omega = 2 * math.pi / T_tmie  # 角速度 (rad/s)  # 0.05 是周期，单位为秒
+
+    env_num, dof = vel_w.shape      # N 是环境数量，dof 是自由度数量
+    A = A.unsqueeze(0).expand(env_num, -1)         # shape [1, dof]
+    phi = phi.unsqueeze(0).expand(env_num, -1)     # shape [1, dof]
+    
+    if overwrite_velocity:
+        vel_w = math_utils.sample_uniform(ranges[:, 0], ranges[:, 1], vel_w.shape, device=asset.device)
+        # vel_w = A * torch.sin(omega * t + phi)
+        
+    else:
+        vel_w += math_utils.sample_uniform(ranges[:, 0], ranges[:, 1], vel_w.shape, device=asset.device)
+        # vel_w += A * torch.sin(omega * t + phi)
+
+    # # 遍历每个自由度维度，处理超范围的速度
+    # for i in range(vel_w.shape[1]):  
+    #     # 超出最大范围，且速度方向向外（正）
+    #     mask_high = too_high[:, i] & (vel_w[:, i] > 0)
+    #     vel_w[:, i] = torch.where(mask_high, torch.zeros_like(vel_w[:, i]), vel_w[:, i])
+
+    #     # 低于最小范围，且速度方向向外（负）
+    #     mask_low = too_low[:, i] & (vel_w[:, i] < 0)
+    #     vel_w[:, i] = torch.where(mask_low, torch.zeros_like(vel_w[:, i]), vel_w[:, i])
+
+    # mask 部分原地使用广播就可以，不需要 for 循环
+    mask_high = too_high # & (vel_w > 0)
+    vel_w = torch.where(mask_high, -ranges[:, 1].unsqueeze(0).expand_as(vel_w), vel_w)
+
+    mask_low = too_low # & (vel_w < 0)
+    vel_w = torch.where(mask_low, -ranges[:, 0].unsqueeze(0).expand_as(vel_w), vel_w)
+
+    # print(f"current_pose: {current_pose}")
+    # print(f"platform_pose_judge: {platform_pose_judge}")
+    # print(f"差值: {current_pose - platform_pose_judge}")
+    # print(f"position_range_list: {position_range_list}")
+    # print(f"too_high: {too_high}")
+    # print(f"too_low: {too_low}")
+    # print(f"vel_w: {vel_w}")
+
+    
+    #-------------------------------------------------------------------------------------------------------#
+
+    # 应用速度到物理仿真
+    asset.write_root_velocity_to_sim(vel_w, env_ids=env_ids)
+
+from isaaclab.envs.mdp.vessels import frigate, semisub, supply
+def move_acceleration(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("platform"),
+):
+    asset: RigidObject | Articulation = env.scene[asset_cfg.name]
+    
+    if not hasattr(env, '_acc_tensor'):
+        import pandas as pd
+        import os
+
+        file_name = "data_now"
+        experiment_index = 1
+        file_path = os.path.expanduser(f'~/IsaacLab/save_data/{file_name}.xlsx')
+        df = pd.read_excel(file_path, skiprows=2)
+
+        cols_per_experiment = 6
+        start_col = (experiment_index - 1) * cols_per_experiment
+        end_col = experiment_index * cols_per_experiment
+
+        exp_df = df.iloc[:, start_col:end_col]
+        exp_df.columns = ['X_acc', 'Y_acc', 'Z_acc', 'X_ang_acc', 'Y_ang_acc', 'Z_ang_acc']
+        # 将角加速度从度转换为弧度 (最后三列是角加速度)
+        exp_df = exp_df.copy()
+        exp_df[['X_ang_acc', 'Y_ang_acc', 'Z_ang_acc']] = exp_df[['X_ang_acc', 'Y_ang_acc', 'Z_ang_acc']] * (math.pi / 180)
+
+        acc_tensor = torch.tensor(exp_df.values, dtype=torch.float32)
+        env._acc_tensor = acc_tensor.to(env.device)  # 保存到环境对象中
+
+
+
+
+    # 运行的不错的： frigate、supply、ROVzefakkel、remus100（有三个角度，但是有个角度要把船翻了）、shipClarke83、tanker
+    # frigate('headingAutopilot', 10.0, 30.0)
+    # semisub('DPcontrol', 10.0, 10.0, 40.0, 0.5, 190.0)
+    # supply('DPcontrol', 5.0, 5.0, 28.64, 0.5, 20.0)
+    # DSRV('depthAutopilot', 60.0)
+    # otter('headingAutopilot', 100.0, 0.3, -30.0, 200.0)
+    # ROVzefakkel('headingAutopilot', 3.0, 100.0)
+    # remus100('depthHeadingAutopilot', 30, 50, 1525, 0.5, 170)
+    # remus100('depthHeadingAutopilot', 0.5, 30, 300, 0.5, 170)
+    # shipClarke83('headingAutopilot', -20.0, 70, 8, 6, 0.7, 0.5, 10.0, 1e5)
+    # tanker('headingAutopilot', -20, 0.5, 150, 20, 80)
+    # torpedo('depthHeadingAutopilot', 30, 50, 1525, 0.5, 170)
+    if not hasattr(env, '_vehicle_dict'):
+        env._vehicle_dict = {}
+    for i in env_ids.tolist():
+        if i not in env._vehicle_dict:
+            env._vehicle_dict[i] = semisub('DPcontrol', 0.0, 0.0, 0, 10, 0.1)
+
+    if not hasattr(env, '_vehicle_dict1'):
+        env._vehicle_dict1 = {}
+    for i in env_ids.tolist():
+        if i not in env._vehicle_dict1:
+            env._vehicle_dict1[i] = semisub('DPcontrol', 0.0, 0.0, 0, 10, 0.1)
+
+    # 初始化位姿参考
+    if not hasattr(env, '_initial_platform_rot'):
+        setattr(env, '_initial_platform_rot', asset.data.root_quat_w.clone())
+    initial_quat = getattr(env, '_initial_platform_rot')[env_ids]
+    if not hasattr(env, '_initial_platform_pos'):
+        setattr(env, '_initial_platform_pos', asset.data.root_pos_w.clone())
+    initial_pos = getattr(env, '_initial_platform_pos')[env_ids]
+
+    # 初始化时间记录
+    # if not hasattr(env, '_last_acceleration_time'):
+    #     setattr(env, '_last_acceleration_time', time.time())
+
+    # # 检查时间间隔
+    # current_time = time.time()
+    # time_since_last = current_time - getattr(env, '_last_acceleration_time')
+    # if time_since_last < 0.02:
+    #     return  # 如果时间间隔小于 0.02 秒，直接返回，不执行后续代码
+
+    
+
+    dt = 1 * env.physics_dt
+    time_me = (0.25 * env._sim_step_counter)
+    # print("[INFO] 循环函数次数:", time_me)
+
+    current_quat = asset.data.root_quat_w[env_ids]
+    q_rel = math_utils.quat_mul(current_quat, math_utils.quat_conjugate(initial_quat.clone().detach()))
+    rot_angles = torch.stack(math_utils.euler_zyx_from_quat(current_quat), dim=1)
+    # rot_angles = (rot_angles + math.pi) % (2 * math.pi) - math.pi
+
+    current_pos = asset.data.root_pos_w[env_ids]
+    relative_pos = current_pos - initial_pos
+    pose = torch.cat([relative_pos, rot_angles], dim=1)
+
+    current_pose = torch.cat([current_pos, rot_angles], dim=1)
+            
+    # nu_lin = asset.data.root_lin_vel_b[env_ids]
+    # nu_ang = asset.data.root_ang_vel_b[env_ids] 
+    # nu = torch.cat([nu_lin, nu_ang], dim=-1)
+    # nu_dot = batch_get_acceleration(pose, nu, env._vehicle_dict, 0.02, env._vehicle_dict1, time_me)
+    # # print("[INFO] 加速度:", nu_dot)
+    # lin_acc = nu_dot[:, :3]
+    # ang_acc = nu_dot[:, 3:]
+    # lin_acc = math_utils.quat_rotate(current_quat, lin_acc)  # 线加速度
+    # ang_acc = math_utils.quat_rotate(current_quat, ang_acc)  # 角加速度
+
+
+
+    acc = get_acceleration_row(env._acc_tensor, i=int(time_me - 1), N=env_ids.shape[0]).to(asset.device)
+    lin_acc = 0 * acc[:, :3]
+    ang_acc = 0 * acc[:, 3:]
+
+    if time_me >= 100:
+        # # GMY
+        # # # # 初始化标志位
+        if hasattr(env, '_acceleration_applied') and env._acceleration_applied < 0.5 and env._acceleration_applied !=0:
+            setattr(env, '_acceleration_applied', env._acceleration_applied + 0.1)
+        elif hasattr(env, '_acceleration_applied') and env._acceleration_applied >= 0.5:
+            setattr(env, '_acceleration_applied', 0)
+
+        if not hasattr(env, '_acceleration_applied'):
+            setattr(env, '_acceleration_applied', 1)
+
+        acc_get = getattr(env, '_acceleration_applied')
+        
+        ang_acc[:, 0] = acc_get  # 设置x方向加速度为1
+        ang_acc[:, 1] = acc_get
+        ang_acc[:, 2] = acc_get
+
+        lin_acc[:, 0] = acc_get  # 设置x方向加速度为1
+        lin_acc[:, 1] = acc_get
+        lin_acc[:, 2] = acc_get
+    if time_me >=100:
+        print("!!!!!!!!!!")
+
+    
+    # print("[INFO] 位置:", pose)
+    # print("[INFO] 角速度:", asset.data.root_ang_vel_w[0,:])
+    # print("[INFO] 线速度:", asset.data.root_lin_vel_w[0,:])
+    # print("[INFO] 线加速度:", asset.data.body_lin_acc_w[0, :])
+    # print("[INFO] 角加速度:", asset.data.body_ang_acc_w[0, :])
+
+    ang_acc_vec = ang_acc.unsqueeze(-1)   # 从 shape [N, 3] 变成 [N, 3, 1]
+    # 获取刚体质量和惯性（注意此处假设只有一个body）
+    mass = asset.data.default_mass.to(asset.device)[env_ids].unsqueeze(-1)
+    inertia = asset.data.default_inertia.to(asset.device)[env_ids]  # [N, 9]
+    inertia_mat = inertia.view(-1, 3, 3)                            # 从 shape [N, 9] 变成 [N, 3, 3]
+
+    # print("[INFO] 质量:", mass)
+    # print("[INFO] inertia:", inertia)
+    # 使用全部元素
+    force = mass * lin_acc.unsqueeze(1) # +  mass * gravity                   # [N, 1, 3]
+    torque = torch.matmul(inertia_mat, ang_acc_vec).squeeze(-1)  # [N, 3]
+
+    # # 只使用对角线元素
+    # inertia_diag = torch.diag_embed(inertia[:, [0,4,8]])
+    # torque = torch.matmul(inertia_diag, ang_acc_vec).squeeze(-1) 
+    # print("[INFO] 力矩:", torque)
+   
+    # GMY
+    # print("[INFO] 速度:", torch.cat([asset.data.root_lin_vel_b, asset.data.root_ang_vel_b], dim=-1))
+    
+    # 更新最后一次计算时间
+    # setattr(env, '_last_acceleration_time', current_time)
+
+    asset.set_external_force_and_torque(
+        forces=force,
+        torques=torque.unsqueeze(1),
+        body_ids=[0],             # 默认主刚体索引为0
+        env_ids=env_ids,
+    )
+
+    # 应用加速度后设置标志位为True
+    # setattr(env, '_acceleration_applied', True)
+
+# import pandas as pd
+# import os
+def get_acceleration_row(acc_tensor: torch.Tensor, i: int, N: int) -> torch.Tensor:
+    """
+    从张量 acc_tensor 中周期性地提取第 i 行的加速度数据，生成形状为 [N, 6] 的张量。
+    
+    读取规则：
+    - 第一轮：正向读取 acc_tensor[i]
+    - 第二轮：反向读取，并取负值 acc_tensor[rev_i] * -1
+    - 如此反复，确保物理意义上的加速度变化是有规律的
+    - 例如： +3 +2 -5 -1 第二次读取就应该是 +1 +5 -2 -3 以此循环
+    
+    参数：
+    - acc_tensor: 输入张量，形状为 [T, 6]，T 是总的加速度数据数
+    - i: 全局索引，递增
+    - N: 扩展为 N 行
+
+    返回：
+    - acc: [N, 6] 张量，是 acc_tensor 中某一行数据（或其相反数）重复 N 次
+    """
+    T = acc_tensor.shape[0]  # 数据长度
+    cycle_length = 2 * T     # 一个完整的正向+反向周期
+    idx_in_cycle = i % cycle_length
+
+    if idx_in_cycle < T:
+        # 正向读取
+        idx = idx_in_cycle
+        acc = acc_tensor[idx]
+    else:
+        # 反向读取并取负
+        idx = cycle_length - 1 - idx_in_cycle
+        acc = -acc_tensor[idx]
+    # 扩展为 [N, 6]
+    return acc.unsqueeze(0).expand(N, -1)
+
+
+
+def batch_get_acceleration(pose_batch: torch.Tensor, vel_batch: torch.Tensor, vehicle, sampleTime: float, vehicle1, time_me: float):
+    acc_list = []
+    for i in range(pose_batch.shape[0]):
+        # 如果不同env_id使用不同的vehicle，则使用vehicle[i]
+        acc = get_platform_acceleration_from_model(pose_batch[i], vel_batch[i], vehicle[i], sampleTime,  vehicle1[i], time_me)
+        acc_list.append(acc)
+    return torch.stack(acc_list, dim=0)
+
+def get_platform_acceleration_from_model(eta: torch.Tensor, nu: torch.Tensor, vehicle, sampleTime: float, vehicle1, time_me: float) -> torch.Tensor:
+    """
+    接收 tensor 输入，内部转 numpy 运算，再返回 tensor 输出。
+    """
+    # 转为 numpy（确保 detach 和在 CPU 上）
+    eta_np = eta.detach().cpu().numpy()
+    nu_np = nu.detach().cpu().numpy()
+
+    # Vehicle specific control systems
+    if (vehicle.controlMode == 'depthAutopilot'):
+        u_control = vehicle.depthAutopilot(eta_np,nu_np,sampleTime)
+    elif (vehicle.controlMode == 'headingAutopilot'):
+        u_control = vehicle.headingAutopilot(eta_np,nu_np,sampleTime)   
+    elif (vehicle.controlMode == 'depthHeadingAutopilot'):
+        u_control = vehicle.depthHeadingAutopilot(eta_np,nu_np,sampleTime)             
+    elif (vehicle.controlMode == 'DPcontrol'):
+        u_control = vehicle.DPcontrol(eta_np,nu_np,sampleTime)
+        u_control1 = vehicle1.DPcontrol(vehicle1.eta,vehicle1.nu,sampleTime)   
+    elif (vehicle.controlMode == 'stepInput'):
+        u_control = vehicle.stepInput(time_me)    
+        u_control1 = vehicle1.stepInput(time_me) 
+
+    # 调用 numpy 风格的模型
+    nu_dot_np, vehicle.u_actual = vehicle.dynamics(eta_np, nu_np, vehicle.u_actual, u_control, sampleTime, time_me)
+    vehicle1_nu_dot, vehicle1.u_actual = vehicle1.dynamics(vehicle1.eta, vehicle1.nu, vehicle1.u_actual, u_control1, sampleTime, time_me)
+    vehicle1.nu = vehicle1.nu + sampleTime * vehicle1_nu_dot
+    vehicle1.eta = attitudeEuler(vehicle1.eta,vehicle1.nu,sampleTime)
+
+    # print("！！！位置eta！！！", vehicle1.eta)
+    # print("！！！速度nu！！！", vehicle1.nu)
+
+    # print("!!!x_d,y_d,z_d!!!   [vehicle1]", vehicle1.x_d, vehicle1.y_d, vehicle1.psi_d)
+    # print("!!!x_d,y_d,z_d!!!   [vehicle]", vehicle.x_d, vehicle.y_d, vehicle.psi_d)
+    
+    # acc = torch.tensor(vehicle.nu, dtype=eta.dtype, device=eta.device)
+    # 返回 tensor，保持原始设备和 dtype
+    acc = torch.tensor(nu_dot_np, dtype=eta.dtype, device=eta.device)
+    return acc
+
+import numpy as np
+def Rzyx(phi,theta,psi):
+    """
+    R = Rzyx(phi,theta,psi) computes the Euler angle rotation matrix R in SO(3)
+    using the zyx convention
+    """
+    
+    cphi = math.cos(phi)
+    sphi = math.sin(phi)
+    cth  = math.cos(theta)
+    sth  = math.sin(theta)
+    cpsi = math.cos(psi)
+    spsi = math.sin(psi)
+    
+    R = np.array([
+        [ cpsi*cth, -spsi*cphi+cpsi*sth*sphi, spsi*sphi+cpsi*cphi*sth ],
+        [ spsi*cth,  cpsi*cphi+sphi*sth*spsi, -cpsi*sphi+sth*spsi*cphi ],
+        [ -sth,      cth*sphi,                 cth*cphi ] ])
+
+    return R
+def Tzyx(phi,theta):
+    """
+    T = Tzyx(phi,theta) computes the Euler angle attitude
+    transformation matrix T using the zyx convention
+    """
+    
+    cphi = math.cos(phi)
+    sphi = math.sin(phi)
+    cth  = math.cos(theta)
+    sth  = math.sin(theta)    
+
+    try: 
+        T = np.array([
+            [ 1,  sphi*sth/cth,  cphi*sth/cth ],
+            [ 0,  cphi,          -sphi],
+            [ 0,  sphi/cth,      cphi/cth] ])
+        
+    except ZeroDivisionError:  
+        print ("Tzyx is singular for theta = +-90 degrees." )
+        
+    return T
+    
+def attitudeEuler(eta,nu,sampleTime):
+    """
+    eta = attitudeEuler(eta,nu,sampleTime) computes the generalized 
+    position/Euler angles eta[k+1]
+    """
+   
+    p_dot   = np.matmul( Rzyx(eta[3], eta[4], eta[5]), nu[0:3] )
+    v_dot   = np.matmul( Tzyx(eta[3], eta[4]), nu[3:6] )
+
+    # Forward Euler integration
+    eta[0:3] = eta[0:3] + sampleTime * p_dot
+    eta[3:6] = eta[3:6] + sampleTime * v_dot
+
+    return eta
+
+
+
+
 
 def randomize_rigid_body_scale(
     env: ManagerBasedEnv,
