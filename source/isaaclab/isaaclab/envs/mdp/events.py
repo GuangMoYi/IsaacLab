@@ -302,7 +302,7 @@ def move_acceleration(
         lin_acc[:, 1] = acc_get
         lin_acc[:, 2] = acc_get
     if time_me >=100:
-        print("!!!!!!!!!!")
+        pass
 
     
     # print("[INFO] 位置:", pose)
@@ -1483,7 +1483,19 @@ def reset_root_state_uniform(
     ranges = torch.tensor(range_list, device=asset.device)
     rand_samples = math_utils.sample_uniform(ranges[:, 0], ranges[:, 1], (len(env_ids), 6), device=asset.device)
 
-    positions = root_states[:, 0:3] + env.scene.env_origins[env_ids] + rand_samples[:, 0:3]
+    # positions = root_states[:, 0:3] + env.scene.env_origins[env_ids] + rand_samples[:, 0:3]
+    
+    # # platform 
+    platform = env.scene["platform"]
+
+    # # 固定在平台上方某高度，比如 2 * platform_z + 0.6
+    platform_pos = platform.data.root_com_pos_w[env_ids]
+    height_offset = 0.5 * platform.cfg.spawn.size[2] + 0.6  # 米
+
+    positions = platform_pos.clone()
+    positions[:, 2] += height_offset
+    positions[:, 0:2] += rand_samples[:, 0:2] + 10
+
     orientations_delta = math_utils.quat_from_euler_xyz(rand_samples[:, 3], rand_samples[:, 4], rand_samples[:, 5])
     orientations = math_utils.quat_mul(root_states[:, 3:7], orientations_delta)
     # velocities

@@ -241,7 +241,7 @@ DeepRobotic_X30_CFG = ArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 150.6),        
+        pos=(0.0, 0.0, 150.6),        # 0.6
         joint_pos={
             ".*L_HipX_joint": 0.1,
             ".*R_HipX_joint": -0.1,
