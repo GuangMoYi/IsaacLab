@@ -173,7 +173,7 @@ def move_velocity(
     # 应用速度到物理仿真
     asset.write_root_velocity_to_sim(vel_w, env_ids=env_ids)
 
-from isaaclab.envs.mdp.vessels import frigate, semisub, supply
+from isaaclab.envs.mdp.vessels import frigate, semisub, supply, VesselControlSystem
 def move_acceleration(
     env: ManagerBasedEnv,
     env_ids: torch.Tensor,
@@ -181,54 +181,6 @@ def move_acceleration(
 ):
     asset: RigidObject | Articulation = env.scene[asset_cfg.name]
     
-    if not hasattr(env, '_acc_tensor'):
-        import pandas as pd
-        import os
-
-        file_name = "data_now"
-        experiment_index = 1
-        file_path = os.path.expanduser(f'~/IsaacLab/save_data/{file_name}.xlsx')
-        df = pd.read_excel(file_path, skiprows=2)
-
-        cols_per_experiment = 6
-        start_col = (experiment_index - 1) * cols_per_experiment
-        end_col = experiment_index * cols_per_experiment
-
-        exp_df = df.iloc[:, start_col:end_col]
-        exp_df.columns = ['X_acc', 'Y_acc', 'Z_acc', 'X_ang_acc', 'Y_ang_acc', 'Z_ang_acc']
-        # 将角加速度从度转换为弧度 (最后三列是角加速度)
-        exp_df = exp_df.copy()
-        exp_df[['X_ang_acc', 'Y_ang_acc', 'Z_ang_acc']] = exp_df[['X_ang_acc', 'Y_ang_acc', 'Z_ang_acc']] * (math.pi / 180)
-
-        acc_tensor = torch.tensor(exp_df.values, dtype=torch.float32)
-        env._acc_tensor = acc_tensor.to(env.device)  # 保存到环境对象中
-
-
-
-
-    # 运行的不错的： frigate、supply、ROVzefakkel、remus100（有三个角度，但是有个角度要把船翻了）、shipClarke83、tanker
-    # frigate('headingAutopilot', 10.0, 30.0)
-    # semisub('DPcontrol', 10.0, 10.0, 40.0, 0.5, 190.0)
-    # supply('DPcontrol', 5.0, 5.0, 28.64, 0.5, 20.0)
-    # DSRV('depthAutopilot', 60.0)
-    # otter('headingAutopilot', 100.0, 0.3, -30.0, 200.0)
-    # ROVzefakkel('headingAutopilot', 3.0, 100.0)
-    # remus100('depthHeadingAutopilot', 30, 50, 1525, 0.5, 170)
-    # remus100('depthHeadingAutopilot', 0.5, 30, 300, 0.5, 170)
-    # shipClarke83('headingAutopilot', -20.0, 70, 8, 6, 0.7, 0.5, 10.0, 1e5)
-    # tanker('headingAutopilot', -20, 0.5, 150, 20, 80)
-    # torpedo('depthHeadingAutopilot', 30, 50, 1525, 0.5, 170)
-    if not hasattr(env, '_vehicle_dict'):
-        env._vehicle_dict = {}
-    for i in env_ids.tolist():
-        if i not in env._vehicle_dict:
-            env._vehicle_dict[i] = semisub('DPcontrol', 0.0, 0.0, 0, 10, 0.1)
-
-    if not hasattr(env, '_vehicle_dict1'):
-        env._vehicle_dict1 = {}
-    for i in env_ids.tolist():
-        if i not in env._vehicle_dict1:
-            env._vehicle_dict1[i] = semisub('DPcontrol', 0.0, 0.0, 0, 10, 0.1)
 
     # 初始化位姿参考
     if not hasattr(env, '_initial_platform_rot'):
@@ -237,18 +189,6 @@ def move_acceleration(
     if not hasattr(env, '_initial_platform_pos'):
         setattr(env, '_initial_platform_pos', asset.data.root_pos_w.clone())
     initial_pos = getattr(env, '_initial_platform_pos')[env_ids]
-
-    # 初始化时间记录
-    # if not hasattr(env, '_last_acceleration_time'):
-    #     setattr(env, '_last_acceleration_time', time.time())
-
-    # # 检查时间间隔
-    # current_time = time.time()
-    # time_since_last = current_time - getattr(env, '_last_acceleration_time')
-    # if time_since_last < 0.02:
-    #     return  # 如果时间间隔小于 0.02 秒，直接返回，不执行后续代码
-
-    
 
     dt = 1 * env.physics_dt
     time_me = (0.25 * env._sim_step_counter)
@@ -264,52 +204,125 @@ def move_acceleration(
     pose = torch.cat([relative_pos, rot_angles], dim=1)
 
     current_pose = torch.cat([current_pos, rot_angles], dim=1)
-            
-    # nu_lin = asset.data.root_lin_vel_b[env_ids]
-    # nu_ang = asset.data.root_ang_vel_b[env_ids] 
-    # nu = torch.cat([nu_lin, nu_ang], dim=-1)
-    # nu_dot = batch_get_acceleration(pose, nu, env._vehicle_dict, 0.02, env._vehicle_dict1, time_me)
-    # # print("[INFO] 加速度:", nu_dot)
-    # lin_acc = nu_dot[:, :3]
-    # ang_acc = nu_dot[:, 3:]
-    # lin_acc = math_utils.quat_rotate(current_quat, lin_acc)  # 线加速度
-    # ang_acc = math_utils.quat_rotate(current_quat, ang_acc)  # 角加速度
 
+    # 先计算速度数据
+    nu_lin = asset.data.root_lin_vel_b[env_ids]
+    nu_ang = asset.data.root_ang_vel_b[env_ids] 
+    nu = torch.cat([nu_lin, nu_ang], dim=-1)
 
-
-    acc = get_acceleration_row(env._acc_tensor, i=int(time_me - 1), N=env_ids.shape[0]).to(asset.device)
-    lin_acc = 0 * acc[:, :3]
-    ang_acc = 0 * acc[:, 3:]
-
-    if time_me >= 100:
-        # # GMY
-        # # # # 初始化标志位
-        if hasattr(env, '_acceleration_applied') and env._acceleration_applied < 0.5 and env._acceleration_applied !=0:
-            setattr(env, '_acceleration_applied', env._acceleration_applied + 0.1)
-        elif hasattr(env, '_acceleration_applied') and env._acceleration_applied >= 0.5:
-            setattr(env, '_acceleration_applied', 0)
-
-        if not hasattr(env, '_acceleration_applied'):
-            setattr(env, '_acceleration_applied', 1)
-
-        acc_get = getattr(env, '_acceleration_applied')
-        
-        ang_acc[:, 0] = acc_get  # 设置x方向加速度为1
-        ang_acc[:, 1] = acc_get
-        ang_acc[:, 2] = acc_get
-
-        lin_acc[:, 0] = acc_get  # 设置x方向加速度为1
-        lin_acc[:, 1] = acc_get
-        lin_acc[:, 2] = acc_get
-    if time_me >=100:
-        pass
-
+    # 为每个环境创建独立的VesselControlSystem实例
+    if not hasattr(env, '_vehicle_dict'):
+        env._vehicle_dict = {}
     
-    # print("[INFO] 位置:", pose)
-    # print("[INFO] 角速度:", asset.data.root_ang_vel_w[0,:])
-    # print("[INFO] 线速度:", asset.data.root_lin_vel_w[0,:])
-    # print("[INFO] 线加速度:", asset.data.body_lin_acc_w[0, :])
-    # print("[INFO] 角加速度:", asset.data.body_ang_acc_w[0, :])
+    # 初始化对比数据存储
+    if not hasattr(env, '_comparison_data'):
+        env._comparison_data = {}
+    
+    # 为当前批次中的每个环境ID创建或获取VesselControlSystem实例
+    for i, env_id in enumerate(env_ids.tolist()):
+        if env_id not in env._vehicle_dict:
+            # 第一次调用时，使用当前实际位置和速度作为初始值
+            current_pose_for_init = pose[i].detach().cpu().numpy()  # 当前环境的位置 [6]
+            current_nu_for_init = nu[i].detach().cpu().numpy()      # 当前环境的速度 [6]
+            
+            # 设置目标位置
+            target_position = [1, 1, 0.1 * np.pi]  # 期望位置 [x, y, yaw]
+            
+            print(f"为环境 {env_id} 创建VesselControlSystem实例，初始位置: {current_pose_for_init}, 初始速度: {current_nu_for_init}")
+            
+            env._vehicle_dict[env_id] = VesselControlSystem(
+                target_position=target_position,
+                initial_eta=current_pose_for_init,
+                initial_nu=current_nu_for_init
+            )
+            
+            # 初始化对比数据（从0开始积分，只初始化第一个环境）
+            if env_id == 0:
+                env._comparison_data[env_id] = {
+                    'isaaclab_eta_history': [],
+                    'isaaclab_nu_history': [],
+                    'calculated_eta_history': [],
+                    'calculated_nu_history': [],
+                    'calculated_eta': np.zeros(6),  # 从0开始积分
+                    'calculated_nu': np.zeros(6),   # 从0开始积分
+                    'step_count': 0
+                }
+
+    # 为每个环境独立计算加速度
+    acc_list = []
+    for i, env_id in enumerate(env_ids.tolist()):
+        # 获取当前环境的位置和速度，去掉批次维度
+        current_pose = pose[i]  # 维度 [6]
+        current_nu = nu[i]      # 维度 [6]
+        
+        # 使用对应环境的VesselControlSystem计算加速度和位置导数
+        acc, eta_dot = env._vehicle_dict[env_id].step(current_pose, current_nu, time_me * 0.02)
+        acc_list.append(acc)
+        
+        # 对比分析：IsaacLab真实输出 vs 积分计算（只处理第一个环境）
+        if env_id == 0 and env_id in env._comparison_data:
+            comp_data = env._comparison_data[env_id]
+            comp_data['step_count'] += 1
+            
+            # 存储IsaacLab的真实输出
+            isaaclab_eta = current_pose.detach().cpu().numpy()
+            isaaclab_nu = current_nu.detach().cpu().numpy()
+            comp_data['isaaclab_eta_history'].append(isaaclab_eta.copy())
+            comp_data['isaaclab_nu_history'].append(isaaclab_nu.copy())
+            
+            # 从0开始积分计算
+            if comp_data['step_count'] == 1:
+                # 第一步：初始化为0
+                comp_data['calculated_eta'] = np.zeros(6)
+                comp_data['calculated_nu'] = np.zeros(6)
+            else:
+                # 后续步骤：eta = eta + eta_dot * dt, nu = nu + nu_dot * dt
+                dt = 0.02  # 时间步长
+                eta_dot_np = eta_dot.detach().cpu().numpy()  # 从系统获取的eta_dot
+                nu_dot_np = acc.detach().cpu().numpy()       # nu_dot = 加速度 (速度变化率)
+                
+                comp_data['calculated_eta'] += eta_dot_np * dt
+                comp_data['calculated_nu'] += nu_dot_np * dt
+            
+            # 存储积分计算结果
+            comp_data['calculated_eta_history'].append(comp_data['calculated_eta'].copy())
+            comp_data['calculated_nu_history'].append(comp_data['calculated_nu'].copy())
+            
+            # 每100步打印一次对比结果
+            if comp_data['step_count'] % 100 == 0:
+                diff_eta = isaaclab_eta - comp_data['calculated_eta']
+                diff_nu = isaaclab_nu - comp_data['calculated_nu']
+                print(f"\n=== 环境 {env_id} 第 {comp_data['step_count']} 步对比 ===")
+                print(f"IsaacLab位置: {isaaclab_eta[:3]}")
+                print(f"积分计算位置: {comp_data['calculated_eta'][:3]}")
+                print(f"位置差别: {diff_eta[:3]}")
+                print(f"IsaacLab速度: {isaaclab_nu[:3]}")
+                print(f"积分计算速度: {comp_data['calculated_nu'][:3]}")
+                print(f"速度差别: {diff_nu[:3]}")
+                print(f"位置差别范数: {np.linalg.norm(diff_eta[:3]):.6f}")
+                print(f"速度差别范数: {np.linalg.norm(diff_nu[:3]):.6f}")
+                
+                # 每1000步保存一次数据到文件
+                if comp_data['step_count'] % 1000 == 0:
+                    save_comparison_data(env, env_id)
+    
+    # 将所有环境的加速度堆叠成批次张量
+    nu_dot = torch.stack(acc_list, dim=0)
+    
+    # 确保数据类型匹配
+    nu_dot = nu_dot.to(dtype=current_quat.dtype, device=current_quat.device)
+
+    # print("[INFO] 加速度:", nu_dot)
+    lin_acc = nu_dot[:, :3]
+    ang_acc = nu_dot[:, 3:]
+    lin_acc = math_utils.quat_apply(current_quat, lin_acc)  # 线加速度
+    ang_acc = math_utils.quat_apply(current_quat, ang_acc)  # 角加速度
+
+    print("[INFO] 位置:", pose)
+    print("[INFO] 角速度:", asset.data.root_ang_vel_w[0,:])
+    print("[INFO] 线速度:", asset.data.root_lin_vel_w[0,:])
+    print("[INFO] 线加速度:", asset.data.body_lin_acc_w[0, :])
+    print("[INFO] 角加速度:", asset.data.body_ang_acc_w[0, :])
 
     ang_acc_vec = ang_acc.unsqueeze(-1)   # 从 shape [N, 3] 变成 [N, 3, 1]
     # 获取刚体质量和惯性（注意此处假设只有一个body）
@@ -2170,6 +2183,32 @@ def _randomize_prop_by_op(
             f"Unknown operation: '{operation}' for property randomization. Please use 'add', 'scale', or 'abs'."
         )
     return data
+
+
+def save_comparison_data(env, env_id):
+    """保存对比数据到文件"""
+    import numpy as np
+    import os
+    
+    if not hasattr(env, '_comparison_data') or env_id not in env._comparison_data:
+        return
+    
+    comp_data = env._comparison_data[env_id]
+    
+    # 创建保存目录
+    save_dir = "/home/user/IsaacLab/comparison_data"
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # 保存数据
+    filename = f"{save_dir}/env_{env_id}_step_{comp_data['step_count']}.npz"
+    np.savez(filename,
+             isaaclab_eta_history=np.array(comp_data['isaaclab_eta_history']),
+             isaaclab_nu_history=np.array(comp_data['isaaclab_nu_history']),
+             calculated_eta_history=np.array(comp_data['calculated_eta_history']),
+             calculated_nu_history=np.array(comp_data['calculated_nu_history']),
+             step_count=comp_data['step_count'])
+    
+    print(f"对比数据已保存到: {filename}")
 
 
 def _validate_scale_range(

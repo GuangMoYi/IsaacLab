@@ -127,7 +127,7 @@ class MySceneCfg(InteractiveSceneCfg):
                 angular_damping=0.0,
                 # kinematic_enabled = True,                                                             # 运动学物体，不受力
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=1e10),                                        # 质量
+            mass_props=sim_utils.MassPropertiesCfg(mass=100000.0),                                      # 质量：降低到合理范围
             collision_props=sim_utils.CollisionPropertiesCfg(
                 # collision_enabled=False,       # 保持碰撞启用
                 # contact_offset=0.0,           # 接触偏移设为0（无预接触力）
