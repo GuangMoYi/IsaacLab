@@ -192,12 +192,6 @@ def move_acceleration(
 
     dt = 0.02
     time_me = (0.25 * env._sim_step_counter)
-    
-    # 调试信息：检查时间步长
-    if env_ids[0] == 0 and hasattr(env, '_debug_counter'):
-        env._debug_counter += 1
-    else:
-        env._debug_counter = 1
     # print("[INFO] 循环函数次数:", time_me)
 
     current_quat = asset.data.root_quat_w[env_ids]
@@ -260,30 +254,16 @@ def move_acceleration(
         current_pose = pose[i]  # 维度 [6]
         current_nu = nu[i]      # 维度 [6]
         
-        # 调试模式：使用常数加速度测试
-        if env_id == 0:  # 只对第一个环境使用常数加速度
-            # # 使用常数加速度进行测试
-            # constant_acc = np.array([0, 0, 0, 0.1, 0.1, 0.0])  # 只测试pitch角加速度，使用更小的值  
-            # acc = torch.tensor(constant_acc, dtype=current_pose.dtype, device=current_pose.device)
-            
-            # # 计算位置导数（简化版本）
-            # eta_dot = torch.zeros_like(current_pose)
-            # eta_dot[:3] = current_nu[:3]  # 位置导数 = 线速度
-            # eta_dot[3:] = current_nu[3:]  # 角度导数 = 角速度
-            
-            # 对比分析：IsaacLab真实输出 vs 积分计算（只处理第一个环境）
-            acc, eta_dot = env._vehicle_dict[env_id].step(current_pose, current_nu, time_me * dt)
-            if env_id in env._comparison_data:
-                comp_data = env._comparison_data[env_id]
-                comp_data['step_count'] += 1
-        else:
-            # 其他环境使用正常的船舶控制系统
-            acc, eta_dot = env._vehicle_dict[env_id].step(current_pose, current_nu, time_me * dt)
-        
+        # 使用对应环境的VesselControlSystem计算加速度和位置导数
+        acc, eta_dot = env._vehicle_dict[env_id].step(current_pose, current_nu, time_me * dt)
         acc_list.append(acc)
         
-        # 存储IsaacLab的真实输出（只对第一个环境）
+        # 对比分析：IsaacLab真实输出 vs 积分计算（只处理第一个环境）
         if env_id == 0 and env_id in env._comparison_data:
+            comp_data = env._comparison_data[env_id]
+            comp_data['step_count'] += 1
+            
+            # 存储IsaacLab的真实输出
             isaaclab_eta = current_pose.detach().cpu().numpy()
             isaaclab_nu = current_nu.detach().cpu().numpy()
             comp_data['isaaclab_eta_history'].append(isaaclab_eta.copy())
@@ -296,26 +276,20 @@ def move_acceleration(
                 comp_data['calculated_nu'] = isaaclab_nu.copy()
             else:
                 # 后续步骤：累加积分 - 观察与IsaacLab真实物理仿真的差异
-                # 注意：必须使用0.02秒，因为：
-                # 1. 我们施加力 → 物理引擎计算 → 产生 0.02秒*加速度 的速度变化
-                # 2. 积分计算也必须使用相同的时间步长，否则会产生累积误差
-                # 3. 即使env.physics_dt可能不同，但力施加机制固定为0.02秒
+                dt = dt
                 eta_dot_np = eta_dot.detach().cpu().numpy()  # 从系统获取的eta_dot
                 nu_dot_np = acc.detach().cpu().numpy()       # nu_dot = 加速度 (速度变化率)
                 
                 # 累加积分：观察积分计算与IsaacLab物理仿真的差异
                 comp_data['calculated_eta'] += eta_dot_np * dt
                 comp_data['calculated_nu'] += nu_dot_np * dt
-                
-                # 角度包装到[-π, π]范围
-                comp_data['calculated_eta'][3:] = np.arctan2(np.sin(comp_data['calculated_eta'][3:]), np.cos(comp_data['calculated_eta'][3:]))
             
             # 存储积分计算结果
             comp_data['calculated_eta_history'].append(comp_data['calculated_eta'].copy())
             comp_data['calculated_nu_history'].append(comp_data['calculated_nu'].copy())
             
             # 每100步打印一次对比结果
-            if comp_data['step_count'] % 100 == 0:
+            if comp_data['step_count'] % 100 == 0:                
                 # 每100步保存一次数据到文件
                 save_comparison_data(env, env_id)
     
@@ -331,7 +305,7 @@ def move_acceleration(
     
     # 坐标系转换
     lin_acc_world = math_utils.quat_apply(current_quat, lin_acc)  # 线加速度：船体->世界
-    ang_acc_world = math_utils.quat_apply(current_quat, ang_acc)  # 角加速度：船体坐标系直接使用
+    ang_acc_world = math_utils.quat_apply(current_quat, ang_acc)
 
     print("[INFO] 位置:", pose)
     print("[INFO] 角速度:", asset.data.root_ang_vel_w[0,:])
@@ -350,13 +324,6 @@ def move_acceleration(
     # 使用全部元素 - 使用世界坐标系下的加速度
     force = mass * lin_acc_world.unsqueeze(1) # +  mass * gravity                   # [N, 1, 3]
     torque = torch.matmul(inertia_mat, ang_acc_vec).squeeze(-1)  # [N, 3]
-    
-    # 调试信息：检查力和力矩（每100步打印一次）
-    if env_ids[0] == 0 and hasattr(env, '_debug_counter') and env._debug_counter % 100 == 0:
-        print(f"[DEBUG] 力和力矩 - 力: {force[0].detach().cpu().numpy()}, 力矩: {torque[0].detach().cpu().numpy()}")
-        print(f"[DEBUG] 质量: {mass[0].detach().cpu().numpy()}")
-        print(f"[DEBUG] 线加速度: {lin_acc_world[0].detach().cpu().numpy()}")
-        print(f"[DEBUG] 角加速度: {ang_acc_world[0].detach().cpu().numpy()}")
 
     # # 只使用对角线元素
     # inertia_diag = torch.diag_embed(inertia[:, [0,4,8]])

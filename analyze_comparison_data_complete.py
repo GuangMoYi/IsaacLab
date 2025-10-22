@@ -12,7 +12,7 @@ def analyze_complete_comparison_data():
     """完整分析对比数据 - 按时间顺序合并所有文件"""
     
     # 数据目录
-    data_dir = "/home/user/IsaacLab/comparison_data/202510171100(Hs=1)"
+    data_dir = "/home/user/IsaacLab/comparison_data"
     
     # 获取所有数据文件（包括子目录）
     # files = glob.glob(f"{data_dir}/**/env_*_step_*.npz", recursive=True)

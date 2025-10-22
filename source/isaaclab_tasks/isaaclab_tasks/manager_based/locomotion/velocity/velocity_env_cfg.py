@@ -128,12 +128,7 @@ class MySceneCfg(InteractiveSceneCfg):
                 # kinematic_enabled = True,                                                             # 运动学物体，不受力
             ),
             mass_props=sim_utils.MassPropertiesCfg(mass=100000.0),                                      # 质量：降低到合理范围
-            collision_props=sim_utils.CollisionPropertiesCfg(
-                # collision_enabled=False,       # 保持碰撞启用
-                # contact_offset=0.0,           # 接触偏移设为0（无预接触力）
-                # rest_offset=0.0,              # 静止偏移设为0（无静止时的微小力）
-                # torsional_patch_radius=0.0,
-            ),               # 碰撞属性 
+            collision_props=sim_utils.CollisionPropertiesCfg(),               # 碰撞属性 
             # collision_props = None,
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.3, 0, 0), metallic=0.2),       # 颜色
             physics_material=sim_utils.RigidBodyMaterialCfg(static_friction=1.0),                       # 摩擦力 1.0 
@@ -347,7 +342,7 @@ class EventCfg:
     push_platform_acc = EventTerm(
         func=mdp.move_acceleration,
         mode="interval",
-        interval_range_s=(0.02, 0.02),    # 每5ms施加一次扰动加速度（建议保持小周期，连续扰动）
+        interval_range_s=(0.02, 0.02),    # 每0.02s施加一次扰动加速度（建议保持小周期，连续扰动）
         params={
             "asset_cfg": SceneEntityCfg("platform"),
         }

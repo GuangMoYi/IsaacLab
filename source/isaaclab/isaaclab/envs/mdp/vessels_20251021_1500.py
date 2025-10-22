@@ -869,7 +869,7 @@ import os
 from scipy.interpolate import interp1d
 
 class VesselControlSystem:
-    def __init__(self, target_position=None, initial_eta=None, initial_nu=None, dt=0.02):
+    def __init__(self, target_position=None, initial_eta=None, initial_nu=None):
         """
         初始化船舶控制系统
         
@@ -878,15 +878,15 @@ class VesselControlSystem:
             initial_eta: 初始位置 [x, y, z, roll, pitch, yaw]，默认为 [0, 0, 0, 10°, 0, 0]
             initial_nu: 初始速度 [u, v, w, p, q, r]，默认为 [0, 0, 0, 0, 0, 0]
         """
-        self.dt = dt  # 调整为更小的时间步长，适合IsaacLab环境
+        self.dt = 0.02  # 调整为更小的时间步长，适合IsaacLab环境
         self.eta_r_ddot = np.zeros(3)
-        self.omega_o = 0.8976 * np.array([0.1, 0.1, 0.1])  # 保守的收敛速度设置
+        self.omega_o = 0.8976 * np.array([0.1, 0.1, 0.1])
         self.omega_c = 1.2255 * self.omega_o
         self.DELTA = np.diag([1, 1, 1])
         
-        # 更保守的控制参数 - 防止振荡
-        self.Kp = 1e5 * np.diag([5e2, 5e2, 2e5])  # 进一步降低比例增益
-        self.Kd = 1e4 * np.diag([2e1, 2e1, 2e2])  # 增加阻尼，抑制振荡
+        # 最初始的控制参数
+        self.Kp = 1e5 * np.diag([2e3, 2e3, 1e6])  # 原始高增益
+        self.Kd = 0 * np.diag([1e1, 1e1, 1e1])  # 原始阻尼
         self._controller_gains = True
         
         # 禁用自适应控制（使用原始设置）
@@ -897,9 +897,9 @@ class VesselControlSystem:
         self._min_gain_ratio = 0.1        # 原始最小增益比例
         
         # 噪声抑制参数
-        self._noise_filter_alpha = 0.8     # 低通滤波器系数
+        self._noise_filter_alpha = 0.8    # 低通滤波器系数
         self._measurement_noise_std = 0.01 # 测量噪声标准差
-        self._control_saturation = 1e6     # 原始控制力饱和限制 # GMY 1e6是能跑的
+        self._control_saturation = 1e6    # 原始控制力饱和限制
         
         # 鲁棒观测器参数
         self._observer_robustness = True
@@ -1219,7 +1219,12 @@ class VesselControlSystem:
 
     def controller(self, eta_r: np.ndarray, x_hat: np.ndarray, b_hat: np.ndarray) -> np.ndarray:
         """优化的控制器 - 返回控制力"""
-        # 控制器参数已在__init__中设置，直接使用
+        if not hasattr(self, '_controller_gains'):
+            # 优化的控制增益（确保能够跟踪目标）
+            self.Kp = 1e5 * np.diag([1e3, 1e3, 1e4])  # 更高的增益
+            self.Kd = 1e4 * np.diag([1e3, 1e3, 1e3])  # 更高的阻尼
+            self._controller_gains = True
+            
         eta_hat, nu_hat = x_hat[0:3], x_hat[3:6]
         error = eta_hat - eta_r
         R = self.Rzyx(np.array([0, 0, eta_hat[2]]))
@@ -1246,7 +1251,13 @@ class VesselControlSystem:
             current_nu_np = current_nu
             is_tensor = False
             
-        # 控制器参数已在__init__中设置，这里不需要重复设置
+        if not hasattr(self, '_controller_gains'):
+            # 优化的控制增益（确保能够跟踪目标）
+            # self.Kp = 1e5 * np.diag([1e3, 1e3, 1e4])  # 更高的增益
+            # self.Kd = 1e4 * np.diag([1e3, 1e3, 1e3])  # 更高的阻尼
+            self.Kp = 1e20 * np.diag([1e0, 1e0, 1e1])  # 1e11 * np.diag([1e0, 1e0, 1e1])  
+            self.Kd = 1e18 * np.diag([1e0, 1e0, 1e1])  # 1e9 * np.diag([1e0, 1e0, 1e1])  
+            self._controller_gains = True
             
         eta_hat, nu_hat = x_hat_np[0:3], x_hat_np[3:6]
         error = eta_hat - eta_r_np
@@ -1255,10 +1266,12 @@ class VesselControlSystem:
         # 计算控制力（保持原始符号）
         u = -R.T @ (self.Kp @ error + self.Kd @ R @ nu_hat + b_hat_np)
         
-        # # 严格的控制力饱和限制
-        # u[0] = np.clip(u[0], -1e5, 1e5)
-        # u[1] = np.clip(u[1], -1e5, 1e5)
-        # u[2] = np.clip(u[2], -1e10, 1e10)
+        # 严格的控制力饱和限制
+        u = np.clip(u, -self._control_saturation, self._control_saturation)
+        
+        # 自适应控制力限制
+        if hasattr(self, '_adaptive_control') and self._adaptive_control:
+            u = self._adaptive_force_limiting(u, error, nu_hat)
         
         # 将控制力转换为6DOF推力
         tau_thruster = np.array([u[0], u[1], 0, 0, 0, u[2]])
@@ -1275,6 +1288,127 @@ class VesselControlSystem:
                              gravity_force + tau_cf - mef)
         
         return nu_dot
+    
+    def _adaptive_force_limiting(self, u: np.ndarray, error: np.ndarray, nu_hat: np.ndarray) -> np.ndarray:
+        """鲁棒自适应控制力限制"""
+        force_magnitude = np.linalg.norm(u)
+        error_magnitude = np.linalg.norm(error)
+        
+        # 更保守的控制力阈值
+        if error_magnitude > self._error_threshold:
+            # 误差大时，适度增加控制力
+            dynamic_threshold = self._max_force_threshold * (1 + 0.5 * error_magnitude)
+        else:
+            # 误差小时，严格限制控制力
+            dynamic_threshold = self._max_force_threshold * 0.3
+        
+        if force_magnitude > dynamic_threshold:
+            # 控制力过大，需要限制
+            scale_factor = dynamic_threshold / force_magnitude
+            u = u * scale_factor
+            
+            # 更保守的增益调整
+            if hasattr(self, '_adaptation_rate'):
+                if error_magnitude > self._error_threshold:
+                    # 误差大时，适度降低增益
+                    self.Kp = self.Kp * (1 - self._adaptation_rate * 0.3)
+                    self.Kd = self.Kd * (1 + self._adaptation_rate * 0.2)
+                else:
+                    # 误差小时，积极调整避免振荡
+                    self.Kp = self.Kp * (1 - self._adaptation_rate * 0.8)
+                    self.Kd = self.Kd * (1 + self._adaptation_rate * 0.5)
+                
+                # 更严格的增益范围限制
+                min_Kp = 1e1 * np.diag([1e0, 1e0, 1e1]) * self._min_gain_ratio
+                max_Kp = 1e3 * np.diag([1e2, 1e2, 1e3])
+                self.Kp = np.maximum(np.minimum(self.Kp, max_Kp), min_Kp)
+                
+                min_Kd = 1e0 * np.diag([1e-1, 1e-1, 1e-1])
+                max_Kd = 1e2 * np.diag([1e1, 1e1, 1e1])
+                self.Kd = np.maximum(np.minimum(self.Kd, max_Kd), min_Kd)
+        
+        return u
+    
+    def simple_pd_controller(self, eta_r: np.ndarray, current_eta: np.ndarray, current_nu: np.ndarray) -> np.ndarray:
+        """简化的PD控制器，避免复杂的观测器和参考轨迹"""
+        # 处理输入数据类型
+        if hasattr(eta_r, 'cpu'):  # 如果是torch张量
+            eta_r_np = eta_r.detach().cpu().numpy()
+            current_eta_np = current_eta.detach().cpu().numpy()
+            current_nu_np = current_nu.detach().cpu().numpy()
+        else:  # 如果是numpy数组
+            eta_r_np = eta_r
+            current_eta_np = current_eta
+            current_nu_np = current_nu
+        
+        # 计算位置误差
+        eta_hat = current_eta_np[[0, 1, 5]]  # 只使用x, y, yaw
+        error = eta_hat - eta_r_np
+        
+        # 计算速度
+        nu_hat = current_nu_np[[0, 1, 5]]  # 只使用u, v, r
+        
+        # 简单的PD控制
+        u = -self.Kp @ error - self.Kd @ nu_hat
+        
+        # 控制力饱和限制
+        u = np.clip(u, -self._control_saturation, self._control_saturation)
+        
+        # 将控制力转换为6DOF推力
+        tau_thruster = np.array([u[0], u[1], 0, 0, 0, u[2]])
+        
+        # 完整的力计算（恢复所有物理效应）
+        nu_r = current_nu_np
+        tau_cf = self.crossflow_drag(nu_r)
+        mef = self.calculate_memory_effects(nu_r)
+        damping_force = self.D @ nu_r
+        gravity_force = self.G @ current_eta_np
+        
+        # 完整的加速度计算（包含所有物理效应）
+        nu_dot = self.inv_M @ (tau_thruster - self.C @ nu_r - damping_force - 
+                             gravity_force + tau_cf - mef)
+        
+        return nu_dot
+    
+    def _noise_suppression_filter(self, current_eta: np.ndarray, current_nu: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """噪声抑制滤波器"""
+        # 低通滤波器抑制高频噪声
+        alpha = self._noise_filter_alpha
+        
+        # 位置滤波
+        self._filtered_eta = alpha * self._filtered_eta + (1 - alpha) * current_eta
+        
+        # 速度滤波
+        self._filtered_nu = alpha * self._filtered_nu + (1 - alpha) * current_nu
+        
+        # 异常值检测和限制
+        eta_max = np.array([1000, 1000, 100, 1, 1, 2*np.pi])  # 位置限制
+        nu_max = np.array([100, 100, 10, 1, 1, 1])  # 速度限制
+        
+        # 限制位置和速度在合理范围内
+        self._filtered_eta = np.clip(self._filtered_eta, -eta_max, eta_max)
+        self._filtered_nu = np.clip(self._filtered_nu, -nu_max, nu_max)
+        
+        return self._filtered_eta, self._filtered_nu
+    
+    def _robust_observer_update(self, y: np.ndarray, y_hat: np.ndarray) -> np.ndarray:
+        """鲁棒观测器更新"""
+        if not hasattr(self, '_observer_robustness') or not self._observer_robustness:
+            return y - y_hat
+        
+        # 计算观测误差
+        y_tilde = y - y_hat
+        
+        # 异常值检测
+        error_threshold = 3 * self._measurement_noise_std
+        if np.linalg.norm(y_tilde) > error_threshold:
+            # 如果误差过大，使用阻尼观测器
+            y_tilde = y_tilde * self._observer_damping
+        
+        # 添加噪声抑制
+        y_tilde = y_tilde * self._observer_noise_gain
+        
+        return y_tilde
 
     def crossflow_drag(self, nu_r) -> np.ndarray:
         """优化的横流阻力计算"""
@@ -1381,7 +1515,9 @@ class VesselControlSystem:
         self.nu = current_nu_np.copy()
         
         # 生成测量噪声（降低噪声水平）
-        y = self.eta[[0, 1, 5]] 
+        np.random.seed(int(current_time * 1000) % 2**32)  # 基于时间的随机种子
+        noise_eta = np.random.normal(0, self._measurement_noise_std, 3)
+        y = self.eta[[0, 1, 5]] + noise_eta
         
         # 参考轨迹计算
         eta_r, eta_r_dot = self.reference[0:3], self.reference[3:6]
@@ -1430,15 +1566,11 @@ class VesselControlSystem:
         保持结果完全一致，仅加速计算
         """
         if not hasattr(self, '_wave_init'):
-            Hs = 0.01
+            Hs = 5
             Tp = 8
             g = 9.81
             omega_p = 2 * np.pi / Tp
             gamma = 3.3
-            
-            # RAO权重系数 - 可以调节每个自由度的波浪响应强度
-            # [Surge, Sway, Heave, Roll, Pitch, Yaw]
-            self._rao_weights = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
             
             vessel = self.vessel
             forceRAO = vessel['forceRAO'][0, 0]
@@ -1494,11 +1626,12 @@ class VesselControlSystem:
             total_phase = base_phase + phase_d              # (Nw, M)
             cos_val = np.cos(total_phase)
             
-            # 合并两次求和为 einsum（最优），并应用RAO权重
-            tau_wave[d] = self._rao_weights[d] * np.einsum('i,ij,ij->', weight, amp_d, cos_val)
+            # 合并两次求和为 einsum（最优）
+            tau_wave[d] = np.einsum('i,ij,ij->', weight, amp_d, cos_val)
 
         return tau_wave
-        
+
+
     def plot_trajectory_comparison(self, time_array, ETA, REF, save_path="trajectory_comparison.png"):
         """
         绘制各个维度的实际轨迹与预期轨迹对比图
