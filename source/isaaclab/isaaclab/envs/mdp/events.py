@@ -232,7 +232,7 @@ def move_acceleration(
             current_nu_for_init = nu[i].detach().cpu().numpy()      # 当前环境的速度 [6]
             
             # 设置目标位置
-            target_position = [10, 10, np.pi]  # 期望位置 [x, y, yaw]
+            target_position = [10, 10, 0.8 * np.pi]  # 期望位置 [x, y, yaw]
             
             env._vehicle_dict[env_id] = VesselControlSystem(
                 target_position=target_position,
