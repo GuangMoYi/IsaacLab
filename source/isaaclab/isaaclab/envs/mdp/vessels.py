@@ -1450,7 +1450,7 @@ class VesselControlSystem:
         保持结果完全一致，仅加速计算
         """
         if not hasattr(self, '_wave_init'):
-            Hs = 0.0
+            Hs = 5.0
             Tp = 8
             g = 9.81
             omega_p = 2 * np.pi / Tp
