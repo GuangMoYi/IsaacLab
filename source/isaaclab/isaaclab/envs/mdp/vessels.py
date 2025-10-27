@@ -1458,7 +1458,7 @@ class VesselControlSystem:
             
             # RAO权重系数 - 可以调节每个自由度的波浪响应强度
             # [Surge, Sway, Heave, Roll, Pitch, Yaw]
-            self._rao_weights = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+            self._rao_weights = np.array([0.1, 0.1, 0.1, 3.0, 3.0, 1.0])
             
             vessel = self.vessel
             forceRAO = vessel['forceRAO'][0, 0]

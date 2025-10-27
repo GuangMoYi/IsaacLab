@@ -119,7 +119,7 @@ class MySceneCfg(InteractiveSceneCfg):
     platform = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Platform",
         spawn=sim_utils.CuboidCfg(
-            size=(100, 100, 100),
+            size=(100, 100, 10),
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=True,                                                                  # 受重力影响(False)
                 enable_gyroscopic_forces=True,                                                          # 允许自由旋转
