@@ -301,53 +301,46 @@ class EventCfg:
         },
     )
 
-    # # interval
-    # push_robot = EventTerm(
-    #     func=mdp.push_by_setting_velocity,
-    #     mode="interval",
-    #     interval_range_s=(10.0, 15.0),
-    #     params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
-    # )
-
-    # # # GMY（训练测试要改）
-    # # 给机器人添加一个事件，线速度角速度
-    # 注：一些事件的命名可能导致代码无法运行，如：命名为push_robot，事件不执行
-    push_velocity = EventTerm(
-        func=mdp.move_velocity,
-        mode="interval",
-        interval_range_s=(5.0, 5.0),                         # 每1.5~2.5秒触发一次，更加接近漂浮节奏
-        params={
-            "asset_cfg": SceneEntityCfg("robot"),
-            "velocity_range": {
-                # "yaw": (0.5, 0.5),                        # 角速度减小，避免旋转太快
-                # "roll": (0.0, 0.0), 
-                # "pitch": (0, 0), 
-                "x": (-0.5, 0.5),                           # 线速度减小，更缓慢的漂浮移动
-                "y": (-0.5, 0.5),
-                # "z": (0, 0),                           # 可以加一点上下漂浮
+    if SceneEntityCfg("platform") is not None:
+        # # # GMY（训练测试要改）
+        # # 给机器人添加一个事件，线速度角速度
+        # 注：一些事件的命名可能导致代码无法运行，如：命名为push_robot，事件不执行
+        push_velocity = EventTerm(
+            func=mdp.move_velocity,
+            mode="interval",
+            interval_range_s=(5.0, 5.0),                         # 每1.5~2.5秒触发一次，更加接近漂浮节奏
+            params={
+                "asset_cfg": SceneEntityCfg("robot"),
+                "velocity_range": {
+                    # "yaw": (0.5, 0.5),                        # 角速度减小，避免旋转太快
+                    # "roll": (0.0, 0.0), 
+                    # "pitch": (0, 0), 
+                    "x": (-0.5, 0.5),                           # 线速度减小，更缓慢的漂浮移动
+                    "y": (-0.5, 0.5),
+                    # "z": (0, 0),                           # 可以加一点上下漂浮
+                },
+                "overwrite_velocity" : False,                # True 不叠加
+                "position_range": {
+                    "x": (-30.0, 30.0),
+                    "y": (-30.0, 30.0),
+                    # "z": (-1.0, 1.0),                            # 垂直方向上下浮动范围不宜太大
+                    # "yaw": (-0.2, 0.2),
+                    # "roll": (-0.2, 0.2),
+                    # "pitch": (-0.2, 0.2),
+                },
             },
-            "overwrite_velocity" : False,                # True 不叠加
-            "position_range": {
-                "x": (-30.0, 30.0),
-                "y": (-30.0, 30.0),
-                # "z": (-1.0, 1.0),                            # 垂直方向上下浮动范围不宜太大
-                # "yaw": (-0.2, 0.2),
-                # "roll": (-0.2, 0.2),
-                # "pitch": (-0.2, 0.2),
-            },
-        },
-    )
+        )
 
-    # 给平台添加扰动加速度事件
-    push_platform_acc = EventTerm(
-        func=mdp.move_acceleration,
-        mode="interval",
-        interval_range_s=(0.02, 0.02),    # 每0.02s施加一次扰动加速度（建议保持小周期，连续扰动）
-        params={
-            "asset_cfg": SceneEntityCfg("platform"),
-        }
-    )
 
+        # 给平台添加扰动加速度事件
+        push_platform_acc = EventTerm(
+            func=mdp.move_acceleration,
+            mode="interval",
+            interval_range_s=(0.02, 0.02),    # 每0.02s施加一次扰动加速度（建议保持小周期，连续扰动）
+            params={
+                "asset_cfg": SceneEntityCfg("platform"),
+            }
+        )
 
 @configclass
 class RewardsCfg:

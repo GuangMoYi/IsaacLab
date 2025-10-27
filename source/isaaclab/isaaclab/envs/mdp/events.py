@@ -232,7 +232,7 @@ def move_acceleration(
             current_nu_for_init = nu[i].detach().cpu().numpy()      # 当前环境的速度 [6]
             
             # 设置目标位置
-            target_position = [1, 1, 0.1 * np.pi]  # 期望位置 [x, y, yaw]
+            target_position = [10, 10, np.pi]  # 期望位置 [x, y, yaw]
             
             env._vehicle_dict[env_id] = VesselControlSystem(
                 target_position=target_position,
@@ -273,6 +273,7 @@ def move_acceleration(
             
             # 对比分析：IsaacLab真实输出 vs 积分计算（只处理第一个环境）
             acc, eta_dot = env._vehicle_dict[env_id].step(current_pose, current_nu, time_me * dt)
+            
             if env_id in env._comparison_data:
                 comp_data = env._comparison_data[env_id]
                 comp_data['step_count'] += 1
@@ -315,7 +316,7 @@ def move_acceleration(
             comp_data['calculated_nu_history'].append(comp_data['calculated_nu'].copy())
             
             # 每100步打印一次对比结果
-            if comp_data['step_count'] % 100 == 0:
+            if comp_data['step_count'] % 1000 == 0:
                 # 每100步保存一次数据到文件
                 save_comparison_data(env, env_id)
     
@@ -329,9 +330,9 @@ def move_acceleration(
     lin_acc = nu_dot[:, :3]  # 船体坐标系线加速度
     ang_acc = nu_dot[:, 3:]  # 船体坐标系角加速度
     
-    # 坐标系转换
-    lin_acc_world = math_utils.quat_apply(current_quat, lin_acc)  # 线加速度：船体->世界
-    ang_acc_world = math_utils.quat_apply(current_quat, ang_acc)  # 角加速度：船体坐标系直接使用
+    # 坐标系转换 ====> 不进行坐标转换
+    lin_acc_world = lin_acc # math_utils.quat_apply(current_quat, lin_acc) 
+    ang_acc_world = ang_acc # math_utils.quat_apply(current_quat, ang_acc)  
 
     print("[INFO] 位置:", pose)
     print("[INFO] 角速度:", asset.data.root_ang_vel_w[0,:])
@@ -347,16 +348,11 @@ def move_acceleration(
 
     # print("[INFO] 质量:", mass)
     # print("[INFO] inertia:", inertia)
+
     # 使用全部元素 - 使用世界坐标系下的加速度
     force = mass * lin_acc_world.unsqueeze(1) # +  mass * gravity                   # [N, 1, 3]
     torque = torch.matmul(inertia_mat, ang_acc_vec).squeeze(-1)  # [N, 3]
-    
-    # 调试信息：检查力和力矩（每100步打印一次）
-    if env_ids[0] == 0 and hasattr(env, '_debug_counter') and env._debug_counter % 100 == 0:
-        print(f"[DEBUG] 力和力矩 - 力: {force[0].detach().cpu().numpy()}, 力矩: {torque[0].detach().cpu().numpy()}")
-        print(f"[DEBUG] 质量: {mass[0].detach().cpu().numpy()}")
-        print(f"[DEBUG] 线加速度: {lin_acc_world[0].detach().cpu().numpy()}")
-        print(f"[DEBUG] 角加速度: {ang_acc_world[0].detach().cpu().numpy()}")
+
 
     # # 只使用对角线元素
     # inertia_diag = torch.diag_embed(inertia[:, [0,4,8]])
@@ -1518,18 +1514,20 @@ def reset_root_state_uniform(
     ranges = torch.tensor(range_list, device=asset.device)
     rand_samples = math_utils.sample_uniform(ranges[:, 0], ranges[:, 1], (len(env_ids), 6), device=asset.device)
 
-    # positions = root_states[:, 0:3] + env.scene.env_origins[env_ids] + rand_samples[:, 0:3]
-    
-    # # platform 
-    platform = env.scene["platform"]
+    # GMY platform
+    if "platform" in env.scene.keys():
+        # # platform 
+        platform = env.scene["platform"]
 
-    # # 固定在平台上方某高度，比如 2 * platform_z + 0.6
-    platform_pos = platform.data.root_com_pos_w[env_ids]
-    height_offset = 0.5 * platform.cfg.spawn.size[2] + 0.6  # 米
+        # # 固定在平台上方某高度，比如 2 * platform_z + 0.6
+        platform_pos = platform.data.root_com_pos_w[env_ids]
+        height_offset = 0.5 * platform.cfg.spawn.size[2] + 0.6  # 米
 
-    positions = platform_pos.clone()
-    positions[:, 2] += height_offset
-    positions[:, 0:2] += rand_samples[:, 0:2] + 10
+        positions = platform_pos.clone()
+        positions[:, 2] += height_offset
+        positions[:, 0:2] += rand_samples[:, 0:2] + 10
+    else:
+        positions = root_states[:, 0:3] + env.scene.env_origins[env_ids] + rand_samples[:, 0:3]
 
     orientations_delta = math_utils.quat_from_euler_xyz(rand_samples[:, 3], rand_samples[:, 4], rand_samples[:, 5])
     orientations = math_utils.quat_mul(root_states[:, 3:7], orientations_delta)

@@ -880,13 +880,13 @@ class VesselControlSystem:
         """
         self.dt = dt  # 调整为更小的时间步长，适合IsaacLab环境
         self.eta_r_ddot = np.zeros(3)
-        self.omega_o = 0.8976 * np.array([0.1, 0.1, 0.1])  # 保守的收敛速度设置
+        self.omega_o = 0.8976 * np.array([0.08, 0.1, 0.1])  # 保守的收敛速度设置
         self.omega_c = 1.2255 * self.omega_o
         self.DELTA = np.diag([1, 1, 1])
         
         # 更保守的控制参数 - 防止振荡
-        self.Kp = 1e5 * np.diag([5e2, 5e2, 2e5])  # 进一步降低比例增益
-        self.Kd = 1e4 * np.diag([2e1, 2e1, 2e2])  # 增加阻尼，抑制振荡
+        self.Kp = np.diag([5e7, 5e7, 2e10])  # 进一步降低比例增益 1e5 * np.diag([5e2, 5e2, 2e5])
+        self.Kd = np.diag([2e4, 2e4, 2e6])  # 增加阻尼，抑制振荡 1e4 * np.diag([2e1, 2e1, 2e2]) 
         self._controller_gains = True
         
         # 禁用自适应控制（使用原始设置）
@@ -1158,7 +1158,7 @@ class VesselControlSystem:
         
         self.xi_hat = x_next[0:6]
         eta_hat = x_next[6:9]
-        self.b_hat = x_next[9:12]
+        self.b_hat = 0 * x_next[9:12]
         self.nu_hat = x_next[12:15]
         
         x_hat = np.concatenate([eta_hat, self.nu_hat])
@@ -1216,16 +1216,6 @@ class VesselControlSystem:
         )
         
         return np.concatenate([xi_hat_dot, eta_hat_dot, b_hat_dot, nu_hat_dot])
-
-    def controller(self, eta_r: np.ndarray, x_hat: np.ndarray, b_hat: np.ndarray) -> np.ndarray:
-        """优化的控制器 - 返回控制力"""
-        # 控制器参数已在__init__中设置，直接使用
-        eta_hat, nu_hat = x_hat[0:3], x_hat[3:6]
-        error = eta_hat - eta_r
-        R = self.Rzyx(np.array([0, 0, eta_hat[2]]))
-        
-        u = -R.T @ (self.Kp @ error + self.Kd @ R @ nu_hat + b_hat)
-        return u
     
     def controller_acceleration(self, eta_r, x_hat, b_hat, 
                                current_eta, current_nu):
@@ -1255,10 +1245,37 @@ class VesselControlSystem:
         # 计算控制力（保持原始符号）
         u = -R.T @ (self.Kp @ error + self.Kd @ R @ nu_hat + b_hat_np)
         
-        # # 严格的控制力饱和限制
-        # u[0] = np.clip(u[0], -1e5, 1e5)
-        # u[1] = np.clip(u[1], -1e5, 1e5)
-        # u[2] = np.clip(u[2], -1e10, 1e10)
+        # 分维度检测是否达到目标位置附近，一旦达到就持续限制（这是没有办法的办法）
+        # if not hasattr(self, '_target_reached_flags'):
+        #     self._target_reached_flags = [False, False, False]  # [X, Y, Z]方向标志
+        #     self.xianzhi1 = 1e6
+        #     self.xianzhi2 = 1e6
+        #     self.xianzhi3 = 1e8
+        # # 分维度检查是否达到目标位置附近
+        # if abs(error[0]) < 0.1:  # X方向接近目标
+        #     self._target_reached_flags[0] = True
+        # if abs(error[1]) < 0.1:  # Y方向接近目标
+        #     self._target_reached_flags[1] = True
+        # if abs(error[2]) < 0.005:  # Z方向接近目标
+        #     self._target_reached_flags[2] = True
+        # # 根据各维度是否达到目标来限制控制力
+        # if self._target_reached_flags[0]:  # X方向已达到目标
+        #     u[0] = np.clip(u[0], -self.xianzhi1, self.xianzhi1)   # X方向严格限制
+        # else:
+        #     pass
+            
+        # if self._target_reached_flags[1]:  # Y方向已达到目标
+        #     u[1] = np.clip(u[1], -self.xianzhi1, self.xianzhi1)   # Y方向严格限制
+        # else:
+        #     pass
+            
+        # if self._target_reached_flags[2]:  # Z方向已达到目标
+        #     u[2] = np.clip(u[2], -self.xianzhi3, self.xianzhi3)   # Z方向严格限制
+        # else:
+        #     pass
+        
+        # 存储控制力到系统状态中
+        self.u = u
         
         # 将控制力转换为6DOF推力
         tau_thruster = np.array([u[0], u[1], 0, 0, 0, u[2]])
@@ -1390,8 +1407,11 @@ class VesselControlSystem:
         
         # 使用观测器（恢复完整的观测器功能）
         y_hat = self.x_hat[0:3]
-        self.x_hat, self.b_hat, self.xi_hat, self.nu_hat = self.observer_dynamics(self.u, y, y_hat)
+        # self.x_hat, self.b_hat, self.xi_hat, self.nu_hat = self.observer_dynamics(self.u, y, y_hat)
         self.x_hat = np.concatenate([self.eta[[0, 1, 5]], self.nu[[0, 1, 5]]])
+        self.nu_hat = self.nu[[0, 1, 5]]
+        self.b_hat = 0 * self.b_hat
+        self.xi_hat = 0 * self.xi_hat
         
         # 控制器计算 - 使用完整的控制器
         current_control_acceleration = self.controller_acceleration(eta_r, self.x_hat, self.b_hat, 
@@ -1430,7 +1450,7 @@ class VesselControlSystem:
         保持结果完全一致，仅加速计算
         """
         if not hasattr(self, '_wave_init'):
-            Hs = 0.01
+            Hs = 0.0
             Tp = 8
             g = 9.81
             omega_p = 2 * np.pi / Tp
