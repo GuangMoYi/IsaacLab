@@ -868,6 +868,13 @@ from typing import Tuple, Dict, Any
 import os
 from scipy.interpolate import interp1d
 
+# 全局波浪数据缓存，避免重复加载
+_global_vessel_data_cache = None
+_global_wave_table_cache = None
+_global_memory_systems_cache = None
+_global_observer_gains_cache = None
+_global_drag_params_cache = None
+
 class VesselControlSystem:
     def __init__(self, target_position=None, initial_eta=None, initial_nu=None, dt=0.02):
         """
@@ -937,30 +944,69 @@ class VesselControlSystem:
         self.rk4_coeffs = np.array([1/6, 1/3, 1/3, 1/6])
         
     def load_vessel_data(self):
-        try:
-            vessel_data = io.loadmat('/home/user/IsaacLab/source/isaaclab/isaaclab/envs/mdp/vessel.mat')
-            vesselABC_data = io.loadmat('/home/user/IsaacLab/source/isaaclab/isaaclab/envs/mdp/vesselABC.mat')
+        """
+        使用全局缓存加载船舶数据，避免重复I/O
+        """
+        global _global_vessel_data_cache
+        
+        if _global_vessel_data_cache is None:
+            print("[INFO] 首次加载船舶数据到全局缓存...")
+            try:
+                vessel_data = io.loadmat('/home/user/IsaacLab/source/isaaclab/isaaclab/envs/mdp/vessel.mat')
+                vesselABC_data = io.loadmat('/home/user/IsaacLab/source/isaaclab/isaaclab/envs/mdp/vesselABC.mat')
 
-            self.vessel = vessel_data['vessel'][0, 0] if 'vessel' in vessel_data else (print("vessel数据未找到") or {})
-            self.vesselABC = vesselABC_data['vesselABC'][0, 0] if 'vesselABC' in vesselABC_data else (print("vesselABC数据未找到") or {})
-            self.inv_M = self.vesselABC['Minv'] if 'Minv' in self.vesselABC.dtype.names else (print("Minv数据未找到") or np.eye(6))
-            self.G = self.vesselABC['G'] if 'G' in self.vesselABC.dtype.names else (print("G数据未找到") or np.zeros((6, 6)))
-            self.D = self.vessel['Bv'][:, :, 0] if 'Bv' in self.vessel.dtype.names else (print("Bv数据未找到") or np.zeros((6, 6)))
-            self.C = np.zeros((6, 6))
-            
-            # 确保质量矩阵被正确设置
-            if not hasattr(self, 'M'):
-                self.M = np.linalg.inv(self.inv_M)
-        except FileNotFoundError:
-            print("警告: 未找到船舶数据文件，使用默认参数")
-            self.vessel = type('obj', (object,), {})()
-            self.vesselABC = type('obj', (object,), {})()
-            # 使用合理的默认质量矩阵
-            self.M = np.diag([1000, 1000, 1000, 100, 100, 100])  # 合理的质量矩阵
-            self.inv_M = np.linalg.inv(self.M)
-            self.G = np.zeros((6, 6))
-            self.D = np.zeros((6, 6))
-            self.C = np.zeros((6, 6))
+                vessel = vessel_data['vessel'][0, 0] if 'vessel' in vessel_data else (print("vessel数据未找到") or {})
+                vesselABC = vesselABC_data['vesselABC'][0, 0] if 'vesselABC' in vesselABC_data else (print("vesselABC数据未找到") or {})
+                inv_M = vesselABC['Minv'] if 'Minv' in vesselABC.dtype.names else (print("Minv数据未找到") or np.eye(6))
+                G = vesselABC['G'] if 'G' in vesselABC.dtype.names else (print("G数据未找到") or np.zeros((6, 6)))
+                D = vessel['Bv'][:, :, 0] if 'Bv' in vessel.dtype.names else (print("Bv数据未找到") or np.zeros((6, 6)))
+                C = np.zeros((6, 6))
+                
+                # 确保质量矩阵被正确设置
+                M = np.linalg.inv(inv_M)
+                
+                # 存储到全局缓存
+                _global_vessel_data_cache = {
+                    'vessel': vessel,
+                    'vesselABC': vesselABC,
+                    'inv_M': inv_M,
+                    'G': G,
+                    'D': D,
+                    'C': C,
+                    'M': M
+                }
+                print("[INFO] 船舶数据已缓存到全局")
+                
+            except FileNotFoundError:
+                print("警告: 未找到船舶数据文件，使用默认参数")
+                vessel = type('obj', (object,), {})()
+                vesselABC = type('obj', (object,), {})()
+                # 使用合理的默认质量矩阵
+                M = np.diag([1000, 1000, 1000, 100, 100, 100])  # 合理的质量矩阵
+                inv_M = np.linalg.inv(M)
+                G = np.zeros((6, 6))
+                D = np.zeros((6, 6))
+                C = np.zeros((6, 6))
+                
+                _global_vessel_data_cache = {
+                    'vessel': vessel,
+                    'vesselABC': vesselABC,
+                    'inv_M': inv_M,
+                    'G': G,
+                    'D': D,
+                    'C': C,
+                    'M': M
+                }
+        
+        # 从全局缓存获取数据
+        cached_data = _global_vessel_data_cache
+        self.vessel = cached_data['vessel']
+        self.vesselABC = cached_data['vesselABC']
+        self.inv_M = cached_data['inv_M']
+        self.G = cached_data['G']
+        self.D = cached_data['D']
+        self.C = cached_data['C']
+        self.M = cached_data['M']
 
     def initialize_states(self, initial_eta=None, initial_nu=None):
         """
@@ -998,44 +1044,60 @@ class VesselControlSystem:
         self.idx_xhat = slice(18, 24)
 
     def initialize_memory_effect_systems(self):
+        """
+        使用全局缓存初始化内存效应系统，避免重复计算
+        """
+        global _global_memory_systems_cache
+        
         if not hasattr(self, 'vesselABC') or 'Ar' not in self.vesselABC.dtype.names:
             self.memory_systems = None
             print("没有找到vesselABC数据或Ar数据")
             return
-            
-        Ar = self.vesselABC['Ar']
-        Br = self.vesselABC['Br']
-        Cr = self.vesselABC['Cr']
-        Dr = self.vesselABC['Dr']
         
-        def safe_get_matrix(cell_array, i, j):
-            try:
-                matrix = cell_array[i, j]
-                return matrix if matrix.size > 0 else np.array([])
-            except (IndexError, AttributeError):
-                return np.array([])
+        # 如果全局缓存不存在，创建它
+        if _global_memory_systems_cache is None:
+            print("[INFO] 首次初始化全局内存效应系统缓存...")
+            
+            Ar = self.vesselABC['Ar']
+            Br = self.vesselABC['Br']
+            Cr = self.vesselABC['Cr']
+            Dr = self.vesselABC['Dr']
+            
+            def safe_get_matrix(cell_array, i, j):
+                try:
+                    matrix = cell_array[i, j]
+                    return matrix if matrix.size > 0 else np.array([])
+                except (IndexError, AttributeError):
+                    return np.array([])
 
-        # 使用列表存储系统参数，便于向量化处理
-        self.memory_systems = []
-        self.memory_states = []
-        
-        # 定义系统索引映射
-        system_indices = [
-            (0, 0), (0, 2), (0, 4),  # 系统1,2,3
-            (1, 1), (1, 3), (1, 5),  # 系统4,5,6  
-            (2, 0), (2, 2), (2, 4),  # 系统7,8,9
-            (3, 1), (3, 3), (3, 5),  # 系统10,11,12
-            (4, 0), (4, 2), (4, 4),  # 系统13,14,15
-            (5, 1), (5, 3), (5, 5)   # 系统16,17,18
-        ]
-        
-        for i, j in system_indices:
-            A = safe_get_matrix(Ar, i, j)
-            B = safe_get_matrix(Br, i, j)
-            C = safe_get_matrix(Cr, i, j)
-            D = safe_get_matrix(Dr, i, j)
+            # 定义系统索引映射
+            system_indices = [
+                (0, 0), (0, 2), (0, 4),  # 系统1,2,3
+                (1, 1), (1, 3), (1, 5),  # 系统4,5,6  
+                (2, 0), (2, 2), (2, 4),  # 系统7,8,9
+                (3, 1), (3, 3), (3, 5),  # 系统10,11,12
+                (4, 0), (4, 2), (4, 4),  # 系统13,14,15
+                (5, 1), (5, 3), (5, 5)   # 系统16,17,18
+            ]
             
-            self.memory_systems.append((A, B, C, D))
+            # 创建全局共享的系统参数
+            global_memory_systems = []
+            for i, j in system_indices:
+                A = safe_get_matrix(Ar, i, j)
+                B = safe_get_matrix(Br, i, j)
+                C = safe_get_matrix(Cr, i, j)
+                D = safe_get_matrix(Dr, i, j)
+                global_memory_systems.append((A, B, C, D))
+            
+            _global_memory_systems_cache = global_memory_systems
+            print(f"[INFO] 全局内存效应系统缓存完成: {len(global_memory_systems)}个系统")
+        
+        # 从全局缓存获取系统参数
+        self.memory_systems = _global_memory_systems_cache
+        
+        # 每个环境需要自己的状态（因为状态会变化）
+        self.memory_states = []
+        for A, B, C, D in self.memory_systems:
             self.memory_states.append(np.zeros(A.shape[0]) if A.size > 0 else np.array([]))
 
     def calculate_memory_effects(self, nu_r) -> np.ndarray:
@@ -1167,9 +1229,12 @@ class VesselControlSystem:
     def observer_dynamics_rhs(self, x: np.ndarray, u: np.ndarray, y: np.ndarray, y_hat: np.ndarray) -> np.ndarray:
         xi_hat, eta_hat, b_hat, nu_hat = x[0:6], x[6:9], x[9:12], x[12:15]
         
-        # 预计算增益矩阵
-        if not hasattr(self, '_K_precomputed'):
-            # print("初始化K_precomputed")
+        # 使用全局缓存预计算增益矩阵
+        global _global_observer_gains_cache
+        
+        if _global_observer_gains_cache is None:
+            print("[INFO] 首次初始化全局观测器增益缓存...")
+            
             zeta_ni, lambda_ni = 1.0, 0.1
             K_11 = -2 * (zeta_ni - lambda_ni) * self.omega_c[0] / self.omega_o[0]
             K_12 = -2 * (zeta_ni - lambda_ni) * self.omega_c[1] / self.omega_o[1]
@@ -1178,25 +1243,42 @@ class VesselControlSystem:
             K_15 = 2 * self.omega_o[1] * (zeta_ni - lambda_ni)
             K_16 = 2 * self.omega_o[2] * (zeta_ni - lambda_ni)
             
-            self.K1 = np.vstack([
+            K1 = np.vstack([
                 np.diag([K_11, K_12, K_13]),
                 np.diag([K_14, K_15, K_16])
             ])
-            self.K2 = np.diag(self.omega_c)
-            self.K4 = 1e3 * np.diag([0.1, 0.1, 0.001])  # 原始观测器增益
-            self.K3 = 0.05 * self.K4
-            self.Aw = np.block([
+            K2 = np.diag(self.omega_c)
+            K4 = 1e3 * np.diag([0.1, 0.1, 0.001])
+            K3 = 0.05 * K4
+            Aw = np.block([
                 [np.zeros((3, 3)), np.eye(3)],
                 [-self.OMEGA2, -2 * self.DELTA @ self.OMEGA]
             ])
-            self.T = 1000 * np.eye(3)
-            self.invT = np.linalg.inv(self.T)
+            T = 1000 * np.eye(3)
+            invT = np.linalg.inv(T)
             
             # 修正：确保使用正确的维度
-            self.invM_reduced = self.inv_M[np.ix_([0,1,5], [0,1,5])] if hasattr(self, 'vesselABC') and hasattr(self, 'inv_M') else (print("Minv数据未找到") or np.eye(3))
-            self.D_reduced = self.D[np.ix_([0,1,5], [0,1,5])] if hasattr(self, 'D') else (print("D数据未找到") or np.zeros((3, 3)))
+            invM_reduced = self.inv_M[np.ix_([0,1,5], [0,1,5])] if hasattr(self, 'vesselABC') and hasattr(self, 'inv_M') else (print("Minv数据未找到") or np.eye(3))
+            D_reduced = self.D[np.ix_([0,1,5], [0,1,5])] if hasattr(self, 'D') else (print("D数据未找到") or np.zeros((3, 3)))
             
-            self._K_precomputed = True
+            _global_observer_gains_cache = {
+                'K1': K1, 'K2': K2, 'K3': K3, 'K4': K4,
+                'Aw': Aw, 'T': T, 'invT': invT,
+                'invM_reduced': invM_reduced, 'D_reduced': D_reduced
+            }
+            print("[INFO] 全局观测器增益缓存完成")
+        
+        # 从全局缓存获取增益矩阵
+        cached_gains = _global_observer_gains_cache
+        self.K1 = cached_gains['K1']
+        self.K2 = cached_gains['K2']
+        self.K3 = cached_gains['K3']
+        self.K4 = cached_gains['K4']
+        self.Aw = cached_gains['Aw']
+        self.T = cached_gains['T']
+        self.invT = cached_gains['invT']
+        self.invM_reduced = cached_gains['invM_reduced']
+        self.D_reduced = cached_gains['D_reduced']
         
         # 简单的观测器更新
         y_tilde = y - y_hat
@@ -1294,14 +1376,19 @@ class VesselControlSystem:
         return nu_dot
 
     def crossflow_drag(self, nu_r) -> np.ndarray:
-        """优化的横流阻力计算"""
+        """使用全局缓存的横流阻力计算"""
+        global _global_drag_params_cache
+        
         # 处理输入数据类型
         if hasattr(nu_r, 'cpu'):  # 如果是torch张量
             nu_r_np = nu_r.detach().cpu().numpy()
         else:  # 如果是numpy数组
             nu_r_np = nu_r
             
-        if not hasattr(self, '_drag_params_init'):
+        # 如果全局缓存不存在，创建它
+        if _global_drag_params_cache is None:
+            print("[INFO] 首次初始化全局横流阻力参数缓存...")
+            
             if 'main' in self.vessel.dtype.names:
                 main_data = self.vessel['main'][0,0]
                 T = main_data['T'][0,0]
@@ -1312,37 +1399,53 @@ class VesselControlSystem:
                 B = self.vessel['B'][0,0] if 'B' in self.vessel.dtype.names else 30
                 Lpp_get = self.vessel['Lpp'][0,0] if 'Lpp' in self.vessel.dtype.names else 200
                 
-            self._Cx = 1
-            self._Ax = 0.9 * T * B  
-            self._Ay = 0.9 * T * Lpp_get  
-            self._CD = self.Hoerner(B, T)
+            Cx = 1
+            Ax = 0.9 * T * B  
+            Ay = 0.9 * T * Lpp_get  
+            CD = self.Hoerner(B, T)
             
             N = 20
             Lpp = 200
             dx = Lpp / (N - 1)
             Lpp2 = Lpp / 2
-            self._x_points = np.arange(N) * dx - Lpp2
-            self._weights = np.ones(N) * dx
-            self._weights[0] = self._weights[-1] = 0.5 * dx
+            x_points = np.arange(N) * dx - Lpp2
+            weights = np.ones(N) * dx
+            weights[0] = weights[-1] = 0.5 * dx
             
             # 预计算常数
-            self._rho_half = 0.5 * 1025
-            self._Ay_scale = self._Ay / 200
-            self._drag_params_init = True
+            rho_half = 0.5 * 1025
+            Ay_scale = Ay / 200
+            
+            _global_drag_params_cache = {
+                'Cx': Cx, 'Ax': Ax, 'CD': CD,
+                'x_points': x_points, 'weights': weights,
+                'rho_half': rho_half, 'Ay_scale': Ay_scale
+            }
+            print("[INFO] 全局横流阻力参数缓存完成")
+        
+        # 从全局缓存获取参数
+        cached_params = _global_drag_params_cache
+        Cx = cached_params['Cx']
+        Ax = cached_params['Ax']
+        CD = cached_params['CD']
+        x_points = cached_params['x_points']
+        weights = cached_params['weights']
+        rho_half = cached_params['rho_half']
+        Ay_scale = cached_params['Ay_scale']
             
         u_r, v_r, r = nu_r_np[0], nu_r_np[1], nu_r_np[5]
         
         # 向量化计算
-        v_local = np.clip(v_r + self._x_points * r, -100, 100)
+        v_local = np.clip(v_r + x_points * r, -100, 100)
         f_values = v_local * np.abs(v_local)
-        weighted_f = f_values * self._weights
+        weighted_f = f_values * weights
         
         sum1 = np.sum(weighted_f)
-        sum2 = np.sum(weighted_f * self._x_points)
+        sum2 = np.sum(weighted_f * x_points)
         
-        X_drag = -self._Ax * self._Cx * self._rho_half * abs(u_r) * u_r
-        Y_drag = -self._Ay_scale * self._CD * self._rho_half * sum1
-        Z_drag = -self._Ay_scale * self._CD * self._rho_half * sum2
+        X_drag = -Ax * Cx * rho_half * abs(u_r) * u_r
+        Y_drag = -Ay_scale * CD * rho_half * sum1
+        Z_drag = -Ay_scale * CD * rho_half * sum2
         
         return np.array([X_drag, Y_drag, 0, 0, 0, Z_drag])
 
@@ -1446,41 +1549,53 @@ class VesselControlSystem:
     
     def generate_wave_loads_jonswap(self, t):
         """
-        极致优化版波浪载荷生成函数
-        保持结果完全一致，仅加速计算
+        预计算优化版波浪载荷生成函数
+        使用预计算表大幅提升性能
         """
         if not hasattr(self, '_wave_init'):
+            self._initialize_wave_precompute()
+        
+        # 使用预计算表进行快速查找
+        return self._get_wave_from_precompute(t)
+    
+    def _initialize_wave_precompute(self):
+        """
+        初始化波浪预计算系统（使用全局缓存）
+        """
+        global _global_wave_table_cache
+        
+        if _global_wave_table_cache is None:
+            print("[INFO] 首次初始化全局波浪预计算系统...")
+            
             Hs = 3.0
             Tp = 8
             g = 9.81
             omega_p = 2 * np.pi / Tp
             gamma = 3.3
             
-            # RAO权重系数 - 可以调节每个自由度的波浪响应强度
-            # [Surge, Sway, Heave, Roll, Pitch, Yaw]
-            self._rao_weights = np.array([0.1, 0.1, 0.1, 3.0, 3.0, 1.0])
+            # RAO权重系数
+            rao_weights = np.array([0.1, 0.1, 0.1, 3.0, 3.0, 1.0])
             
             vessel = self.vessel
             forceRAO = vessel['forceRAO'][0, 0]
             w = forceRAO['w'].flatten()
             w_min, w_max = np.min(w), np.max(w)
             Nw = 50
-            self._wave_omega = np.linspace(w_min, w_max, Nw)
-            domega = self._wave_omega[1] - self._wave_omega[0]
+            wave_omega = np.linspace(w_min, w_max, Nw)
+            domega = wave_omega[1] - wave_omega[0]
             
-            # ---- JONSWAP 谱计算 ----
-            sigma = np.where(self._wave_omega <= omega_p, 0.07, 0.09)
-            S0 = (g**2 / self._wave_omega**5) * np.exp(-1.25 * (omega_p / self._wave_omega)**4) * \
-                gamma**np.exp(-((self._wave_omega - omega_p)**2) / (2 * (sigma * omega_p)**2))
+            # JONSWAP 谱计算
+            sigma = np.where(wave_omega <= omega_p, 0.07, 0.09)
+            S0 = (g**2 / wave_omega**5) * np.exp(-1.25 * (omega_p / wave_omega)**4) * \
+                gamma**np.exp(-((wave_omega - omega_p)**2) / (2 * (sigma * omega_p)**2))
             alpha = Hs**2 / (16 * np.sum(S0 * domega))
             S = alpha * S0
-            self._wave_spectrum_weight = np.sqrt(2 * S * domega)
+            wave_spectrum_weight = np.sqrt(2 * S * domega)
             
-            # ---- 固定随机相位 ----
-            # np.random.seed(42)
-            self._wave_epsilon = 0 * 2 * np.pi * np.random.rand(6, Nw)
+            # 固定随机相位（设为0）
+            wave_epsilon = 2 * np.pi * np.random.rand(6, Nw)
             
-            # ---- 预加载所有 DOF 数据 ----
+            # 预加载所有 DOF 数据
             all_amp, all_phase, dof_sizes = [], [], []
             for d in range(6):
                 amp = forceRAO['amp'][0, d]
@@ -1490,34 +1605,88 @@ class VesselControlSystem:
                 all_phase.append(phase.reshape(-1, ND * NM))
                 dof_sizes.append(ND * NM)
             
-            self._wave_amp_all = np.concatenate(all_amp, axis=1)
-            self._wave_phase_all = np.concatenate(all_phase, axis=1)
+            wave_amp_all = np.concatenate(all_amp, axis=1)
+            wave_phase_all = np.concatenate(all_phase, axis=1)
             
-            f_amp = interp1d(w, self._wave_amp_all, kind='linear', axis=0, fill_value='extrapolate')
-            f_phase = interp1d(w, self._wave_phase_all, kind='linear', axis=0, fill_value='extrapolate')
-            self._wave_amp_interp = f_amp(self._wave_omega)
-            self._wave_phase_interp = f_phase(self._wave_omega)
+            f_amp = interp1d(w, wave_amp_all, kind='linear', axis=0, fill_value='extrapolate')
+            f_phase = interp1d(w, wave_phase_all, kind='linear', axis=0, fill_value='extrapolate')
+            wave_amp_interp = f_amp(wave_omega)
+            wave_phase_interp = f_phase(wave_omega)
             
-            self._wave_dof_boundaries = np.cumsum([0] + dof_sizes)
-            self._wave_init = True
+            wave_dof_boundaries = np.cumsum([0] + dof_sizes)
+            
+            # 预计算波浪载荷表
+            max_time = 1000.0
+            dt_precompute = 0.02
+            time_points = int(max_time / dt_precompute) + 1
+            
+            wave_table = np.zeros((time_points, 6))
+            
+            # 预计算所有时间点的波浪载荷
+            for i in range(time_points):
+                t = i * dt_precompute
+                omega_t = wave_omega * t
+                weight = wave_spectrum_weight
+                tau_wave = np.zeros(6)
+
+                for d in range(6):
+                    s, e = wave_dof_boundaries[d], wave_dof_boundaries[d + 1]
+                    amp_d = wave_amp_interp[:, s:e]
+                    phase_d = wave_phase_interp[:, s:e]
+                    base_phase = omega_t[:, None] + wave_epsilon[d, :, None]
+                    total_phase = base_phase + phase_d
+                    cos_val = np.cos(total_phase)
+                    
+                    tau_wave[d] = rao_weights[d] * np.einsum('i,ij,ij->', weight, amp_d, cos_val)
+                
+                wave_table[i] = tau_wave
+            
+            # 存储到全局缓存
+            _global_wave_table_cache = {
+                'wave_table': wave_table,
+                'dt_precompute': dt_precompute,
+                'max_time': max_time,
+                'rao_weights': rao_weights
+            }
+            
+            print(f"[INFO] 全局波浪载荷表预计算完成: {time_points}个时间点")
         
-        # ---- 高频优化计算 ----
-        omega_t = self._wave_omega * t  # shape (Nw,)
-        weight = self._wave_spectrum_weight  # shape (Nw,)
-        tau_wave = np.zeros(6)
-
-        for d in range(6):
-            s, e = self._wave_dof_boundaries[d], self._wave_dof_boundaries[d + 1]
-            amp_d = self._wave_amp_interp[:, s:e]           # (Nw, M)
-            phase_d = self._wave_phase_interp[:, s:e]       # (Nw, M)
-            base_phase = omega_t[:, None] + self._wave_epsilon[d, :, None]  # (Nw, 1)
-            total_phase = base_phase + phase_d              # (Nw, M)
-            cos_val = np.cos(total_phase)
+        # 从全局缓存获取数据
+        cached_wave = _global_wave_table_cache
+        self._wave_table = cached_wave['wave_table']
+        self._wave_table_dt = cached_wave['dt_precompute']
+        self._wave_table_max_time = cached_wave['max_time']
+        self._rao_weights = cached_wave['rao_weights']
+        
+        self._wave_init = True
+        print("[INFO] 波浪预计算系统初始化完成（使用全局缓存）")
+    
+    
+    def _get_wave_from_precompute(self, t):
+        """
+        从预计算表中获取波浪载荷
+        """
+        # 如果时间超出预计算范围，使用周期性扩展
+        t_mod = t % self._wave_table_max_time
+        
+        # 计算查找索引
+        idx = int(t_mod / self._wave_table_dt)
+        
+        # 确保索引不超出范围
+        if idx >= len(self._wave_table):
+            idx = len(self._wave_table) - 1
+        
+        # 线性插值以获得更精确的结果
+        if idx < len(self._wave_table) - 1:
+            t1 = idx * self._wave_table_dt
+            t2 = (idx + 1) * self._wave_table_dt
+            alpha = (t_mod - t1) / self._wave_table_dt
             
-            # 合并两次求和为 einsum（最优），并应用RAO权重
-            tau_wave[d] = self._rao_weights[d] * np.einsum('i,ij,ij->', weight, amp_d, cos_val)
-
-        return tau_wave
+            wave1 = self._wave_table[idx]
+            wave2 = self._wave_table[idx + 1]
+            return (1 - alpha) * wave1 + alpha * wave2
+        else:
+            return self._wave_table[idx]
         
     def plot_trajectory_comparison(self, time_array, ETA, REF, save_path="trajectory_comparison.png"):
         """

@@ -283,6 +283,7 @@ def move_acceleration(
         
         acc_list.append(acc)
         
+        # ===========================  GMY changed 存储真实数据与计算数据对比 ============================
         # 存储IsaacLab的真实输出（只对第一个环境）
         if env_id == 0 and env_id in env._comparison_data:
             isaaclab_eta = current_pose.detach().cpu().numpy()
@@ -296,11 +297,6 @@ def move_acceleration(
                 comp_data['calculated_eta'] = isaaclab_eta.copy()
                 comp_data['calculated_nu'] = isaaclab_nu.copy()
             else:
-                # 后续步骤：累加积分 - 观察与IsaacLab真实物理仿真的差异
-                # 注意：必须使用0.02秒，因为：
-                # 1. 我们施加力 → 物理引擎计算 → 产生 0.02秒*加速度 的速度变化
-                # 2. 积分计算也必须使用相同的时间步长，否则会产生累积误差
-                # 3. 即使env.physics_dt可能不同，但力施加机制固定为0.02秒
                 eta_dot_np = eta_dot.detach().cpu().numpy()  # 从系统获取的eta_dot
                 nu_dot_np = acc.detach().cpu().numpy()       # nu_dot = 加速度 (速度变化率)
                 
@@ -316,7 +312,7 @@ def move_acceleration(
             comp_data['calculated_nu_history'].append(comp_data['calculated_nu'].copy())
             
             # 每100步打印一次对比结果
-            if comp_data['step_count'] % 1000 == 0:
+            if comp_data['step_count'] % 10000 == 0:
                 # 每100步保存一次数据到文件
                 save_comparison_data(env, env_id)
     

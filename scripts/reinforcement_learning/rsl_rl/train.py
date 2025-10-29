@@ -27,7 +27,7 @@ parser.add_argument(
     "--agent", type=str, default="rsl_rl_cfg_entry_point", help="Name of the RL agent configuration entry point."
 )  # RL智能体配置入口点名称
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")  # 环境随机种子
-parser.add_argument("--max_iterations", type=int, default=500, help="RL Policy training iterations.")  # 最大训练迭代次数
+parser.add_argument("--max_iterations", type=int, default=50000, help="RL Policy training iterations.")  # 最大训练迭代次数
 parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )  # 是否使用分布式训练（多GPU或多节点）
