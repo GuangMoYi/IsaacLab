@@ -190,8 +190,14 @@ def move_acceleration(
         setattr(env, '_initial_platform_pos', asset.data.root_pos_w.clone())
     initial_pos = getattr(env, '_initial_platform_pos')[env_ids]
 
-    dt = 1 * env.physics_dt
+    dt = 0.02
     time_me = (0.25 * env._sim_step_counter)
+    
+    # 调试信息：检查时间步长
+    if env_ids[0] == 0 and hasattr(env, '_debug_counter'):
+        env._debug_counter += 1
+    else:
+        env._debug_counter = 1
     # print("[INFO] 循环函数次数:", time_me)
 
     current_quat = asset.data.root_quat_w[env_ids]
@@ -210,50 +216,249 @@ def move_acceleration(
     nu_ang = asset.data.root_ang_vel_b[env_ids] 
     nu = torch.cat([nu_lin, nu_ang], dim=-1)
 
+    # # ========================================================原有不同环境不同平台代码===========================================
     # 为每个环境创建独立的VesselControlSystem实例
-    if not hasattr(env, '_vehicle_dict'):
-        env._vehicle_dict = {}
+    # if not hasattr(env, '_vehicle_dict'):
+    #     env._vehicle_dict = {}
     
-    # 为当前批次中的每个环境ID创建或获取VesselControlSystem实例
-    for i, env_id in enumerate(env_ids.tolist()):
-        if env_id not in env._vehicle_dict:
-            # 第一次调用时，使用当前实际位置和速度作为初始值
-            current_pose_for_init = pose[i].detach().cpu().numpy()  # 当前环境的位置 [6]
-            current_nu_for_init = nu[i].detach().cpu().numpy()      # 当前环境的速度 [6]
+    # # 初始化对比数据存储（保留这个，因为优化后的代码也需要）
+    # if not hasattr(env, '_comparison_data'):
+    #     env._comparison_data = {}
+    
+    # # 为当前批次中的每个环境ID创建或获取VesselControlSystem实例
+    # for i, env_id in enumerate(env_ids.tolist()):
+    #     if env_id not in env._vehicle_dict:
+    #         # 第一次调用时，使用当前实际位置和速度作为初始值
+    #         current_pose_for_init = pose[i].detach().cpu().numpy()  # 当前环境的位置 [6]
+    #         current_nu_for_init = nu[i].detach().cpu().numpy()      # 当前环境的速度 [6]
             
-            # 设置目标位置
-            target_position = [1, 1, 0.1 * np.pi]  # 期望位置 [x, y, yaw]
+    #         # 设置目标位置
+    #         target_position = [10, 10, 0.8 * np.pi]  # 期望位置 [x, y, yaw]
             
-            print(f"为环境 {env_id} 创建VesselControlSystem实例，初始位置: {current_pose_for_init}, 初始速度: {current_nu_for_init}")
+    #         env._vehicle_dict[env_id] = VesselControlSystem(
+    #             target_position=target_position,
+    #             initial_eta=current_pose_for_init,
+    #             initial_nu=current_nu_for_init,
+    #             dt=dt
+    #         )
             
-            env._vehicle_dict[env_id] = VesselControlSystem(
-                target_position=target_position,
-                initial_eta=current_pose_for_init,
-                initial_nu=current_nu_for_init
-            )
+    #         # 初始化对比数据（从0开始积分，只初始化第一个环境）
+    #         if env_id == 0:
+    #             env._comparison_data[env_id] = {
+    #                 'isaaclab_eta_history': [],
+    #                 'isaaclab_nu_history': [],
+    #                 'calculated_eta_history': [],
+    #                 'calculated_nu_history': [],
+    #                 'calculated_eta': np.zeros(6),  # 从0开始积分
+    #                 'calculated_nu': np.zeros(6),   # 从0开始积分
+    #                 'step_count': 0
+    #             }
 
-    # 为每个环境独立计算加速度
-    acc_list = []
-    for i, env_id in enumerate(env_ids.tolist()):
-        # 获取当前环境的位置和速度，去掉批次维度
-        current_pose = pose[i]  # 维度 [6]
-        current_nu = nu[i]      # 维度 [6]
+    # # 为每个环境独立计算加速度
+    # acc_list = []
+    # for i, env_id in enumerate(env_ids.tolist()):
+    #     # 获取当前环境的位置和速度，去掉批次维度
+    #     current_pose = pose[i]  # 维度 [6]
+    #     current_nu = nu[i]      # 维度 [6]
         
-        # 使用对应环境的VesselControlSystem计算加速度
-        acc = env._vehicle_dict[env_id].step(current_pose, current_nu, time_me * 0.02)
-        acc_list.append(acc)
+    #     # 调试模式：使用常数加速度测试
+    #     if env_id == 0:  # 只对第一个环境使用常数加速度
+    #         # # 使用常数加速度进行测试
+    #         # constant_acc = np.array([0, 0, 0, 0.1, 0.1, 0.0])  # 只测试pitch角加速度，使用更小的值  
+    #         # acc = torch.tensor(constant_acc, dtype=current_pose.dtype, device=current_pose.device)
+            
+    #         # # 计算位置导数（简化版本）
+    #         # eta_dot = torch.zeros_like(current_pose)
+    #         # eta_dot[:3] = current_nu[:3]  # 位置导数 = 线速度
+    #         # eta_dot[3:] = current_nu[3:]  # 角度导数 = 角速度
+            
+    #         # 对比分析：IsaacLab真实输出 vs 积分计算（只处理第一个环境）
+    #         acc, eta_dot = env._vehicle_dict[env_id].step(current_pose, current_nu, time_me * dt)
+            
+    #         if env_id in env._comparison_data:
+    #             comp_data = env._comparison_data[env_id]
+    #             comp_data['step_count'] += 1
+    #     else:
+    #         # 其他环境使用正常的船舶控制系统
+    #         acc, eta_dot = env._vehicle_dict[env_id].step(current_pose, current_nu, time_me * dt)
+        
+    #     acc_list.append(acc)
+
+    #     # ===========================  GMY changed 存储真实数据与计算数据对比 ============================
+    #     # 存储IsaacLab的真实输出（只对第一个环境）
+    #     if env_id == 0 and env_id in env._comparison_data:
+    #         isaaclab_eta = current_pose.detach().cpu().numpy()
+    #         isaaclab_nu = current_nu.detach().cpu().numpy()
+    #         comp_data['isaaclab_eta_history'].append(isaaclab_eta.copy())
+    #         comp_data['isaaclab_nu_history'].append(isaaclab_nu.copy())
+            
+    #         # 从IsaacLab的初始状态开始积分计算
+    #         if comp_data['step_count'] == 1:
+    #             # 第一步：使用IsaacLab的初始状态
+    #             comp_data['calculated_eta'] = isaaclab_eta.copy()
+    #             comp_data['calculated_nu'] = isaaclab_nu.copy()
+    #         else:
+    #             eta_dot_np = eta_dot.detach().cpu().numpy()  # 从系统获取的eta_dot
+    #             nu_dot_np = acc.detach().cpu().numpy()       # nu_dot = 加速度 (速度变化率)
+                
+    #             # 累加积分：观察积分计算与IsaacLab物理仿真的差异
+    #             comp_data['calculated_eta'] += eta_dot_np * dt
+    #             comp_data['calculated_nu'] += nu_dot_np * dt
+                
+    #             # 角度包装到[-π, π]范围
+    #             comp_data['calculated_eta'][3:] = np.arctan2(np.sin(comp_data['calculated_eta'][3:]), np.cos(comp_data['calculated_eta'][3:]))
+            
+    #         # 存储积分计算结果
+    #         comp_data['calculated_eta_history'].append(comp_data['calculated_eta'].copy())
+    #         comp_data['calculated_nu_history'].append(comp_data['calculated_nu'].copy())
+            
+    #         # 每100步打印一次对比结果
+    #         if comp_data['step_count'] % 1000 == 0:
+    #             # 每1000步保存一次数据到文件
+    #             save_comparison_data(env, env_id)    
+    #     # 将所有环境的加速度堆叠成批次张量
+    # nu_dot = torch.stack(acc_list, dim=0)    
+    # ========================================================原有不同环境不同平台代码===========================================
+
+    # ========================================================所有环境同一个平台代码===========================================
+    # 性能优化：所有环境共用一个控制平台系统，大幅提升多环境性能
+    # 物理上：每个环境都有独立的物理平台刚体（1024个物理平台）
+    # 控制上：所有平台都使用同一个VesselControlSystem实例，执行相同的运动轨迹
+
+    # 初始化对比数据存储（保留这个，因为优化后的代码也需要）
+    if not hasattr(env, '_comparison_data'):
+        env._comparison_data = {}
+    # 关键优化1：创建全局共享的控制平台系统（只创建一次）
+    if not hasattr(env, '_shared_platform_system'):
+        # 使用第一个环境的初始状态创建共享平台系统
+        initial_pose = pose[0].detach().cpu().numpy()  # 使用第一个环境的位置
+        initial_nu = nu[0].detach().cpu().numpy()      # 使用第一个环境的速度
+        target_position = [10, 10, 0.8 * np.pi]        # 期望位置
+        
+        env._shared_platform_system = VesselControlSystem(
+            target_position=target_position,
+            initial_eta=initial_pose,
+            initial_nu=initial_nu,
+            dt=dt
+        )
+        print(f"[INFO] 创建全局共享控制平台系统，目标位置: {target_position}")
     
-    # 将所有环境的加速度堆叠成批次张量
-    nu_dot = torch.stack(acc_list, dim=0)
+    # 关键优化2：批量处理所有环境，避免循环
+    # 将torch张量转换为numpy数组进行批量计算
+    pose_np = pose.detach().cpu().numpy()  # [num_envs, 6]
+    nu_np = nu.detach().cpu().numpy()      # [num_envs, 6]
+    current_time = time_me * dt
+    
+    # 关键优化3：使用共享控制策略
+    # 所有环境使用相同的控制平台系统，执行同步运动
+    shared_system = env._shared_platform_system
+    
+    # 预分配输出数组
+    num_envs = len(env_ids)
+    acc_batch = np.zeros((num_envs, 6))
+    eta_dot_batch = np.zeros((num_envs, 6))
+    
+    # 关键优化4：真正的共享控制 - 所有平台使用相同的控制指令
+    import time
+    start_time = time.time()
+    
+    # 只使用第一个环境的状态来计算控制指令（所有平台同步运动）
+    shared_system.eta[:] = pose_np[0]  # 使用第一个环境的状态
+    shared_system.nu[:] = nu_np[0]     # 使用第一个环境的状态
+    
+    # 只计算一次控制指令
+    acc, eta_dot = shared_system.step(pose_np[0], nu_np[0], current_time)
+    
+    # 将相同的控制指令应用到所有环境（所有平台同步运动）
+    for i in range(num_envs):
+        acc_batch[i] = acc
+        eta_dot_batch[i] = eta_dot
+    
+    computation_time = time.time() - start_time
+    
+    # 性能统计
+    if not hasattr(env, '_performance_stats'):
+        env._performance_stats = {'total_time': 0, 'call_count': 0}
+    
+    env._performance_stats['total_time'] += computation_time
+    env._performance_stats['call_count'] += 1
+    
+    if env._performance_stats['call_count'] % 100 == 0:
+        avg_time = env._performance_stats['total_time'] / env._performance_stats['call_count']
+        print(f"[PERF] 共享控制计算 - 平均耗时: {avg_time*1000:.2f}ms, 环境数: {num_envs}, 总耗时: {computation_time*1000:.2f}ms")
+    
+    # 关键优化5：将numpy结果转换回torch张量
+    nu_dot = torch.from_numpy(acc_batch).to(
+        dtype=current_quat.dtype, 
+        device=current_quat.device
+    )
+    
+    # 关键优化6：保持原有的对比数据功能（仅对第一个环境）
+    # 确保第一个环境的对比数据被初始化
+    if 0 in env_ids.tolist():
+        if 0 not in env._comparison_data:
+            print(f"[INFO] 初始化环境0的对比数据")
+            env._comparison_data[0] = {
+                'isaaclab_eta_history': [],
+                'isaaclab_nu_history': [],
+                'calculated_eta_history': [],
+                'calculated_nu_history': [],
+                'calculated_eta': np.zeros(6),  # 从0开始积分
+                'calculated_nu': np.zeros(6),   # 从0开始积分
+                'step_count': 0
+            }
+    
+    if 0 in env_ids.tolist() and 0 in env._comparison_data:
+        comp_data = env._comparison_data[0]
+        comp_data['step_count'] += 1
+        
+        # 存储IsaacLab的真实输出
+        isaaclab_eta = pose[0].detach().cpu().numpy()
+        isaaclab_nu = nu[0].detach().cpu().numpy()
+        comp_data['isaaclab_eta_history'].append(isaaclab_eta.copy())
+        comp_data['isaaclab_nu_history'].append(isaaclab_nu.copy())
+        
+        # 积分计算对比
+        if comp_data['step_count'] == 1:
+            comp_data['calculated_eta'] = isaaclab_eta.copy()
+            comp_data['calculated_nu'] = isaaclab_nu.copy()
+        else:
+            eta_dot_np = eta_dot_batch[0]
+            nu_dot_np = acc_batch[0]
+            
+            comp_data['calculated_eta'] += eta_dot_np * dt
+            comp_data['calculated_nu'] += nu_dot_np * dt
+            
+            # 角度包装
+            comp_data['calculated_eta'][3:] = np.arctan2(
+                np.sin(comp_data['calculated_eta'][3:]), 
+                np.cos(comp_data['calculated_eta'][3:])
+            )
+        
+        comp_data['calculated_eta_history'].append(comp_data['calculated_eta'].copy())
+        comp_data['calculated_nu_history'].append(comp_data['calculated_nu'].copy())
+        
+        # 每100步保存一次数据
+        if comp_data['step_count'] % 10000 == 0:
+            print(f"[INFO] 准备保存数据 - 步数: {comp_data['step_count']}, 历史数据长度: {len(comp_data['isaaclab_eta_history'])}")
+            save_comparison_data(env, 0)
+    
+    # 关键优化7：性能统计（可选）
+    if not hasattr(env, '_batch_performance_counter'):
+        env._batch_performance_counter = 0
+    env._batch_performance_counter += 1
     
     # 确保数据类型匹配
     nu_dot = nu_dot.to(dtype=current_quat.dtype, device=current_quat.device)
 
-    # print("[INFO] 加速度:", nu_dot)
-    lin_acc = nu_dot[:, :3]
-    ang_acc = nu_dot[:, 3:]
-    lin_acc = math_utils.quat_apply(current_quat, lin_acc)  # 线加速度
-    ang_acc = math_utils.quat_apply(current_quat, ang_acc)  # 角加速度
+
+    # ========================================================所有环境同一个平台代码===========================================
+    lin_acc = nu_dot[:, :3]  # 船体坐标系线加速度
+    ang_acc = nu_dot[:, 3:]  # 船体坐标系角加速度
+    
+    # 坐标系转换 ====> 不进行坐标转换
+    lin_acc_world = lin_acc # math_utils.quat_apply(current_quat, lin_acc) 
+    ang_acc_world = ang_acc # math_utils.quat_apply(current_quat, ang_acc)  
 
     print("[INFO] 位置:", pose)
     print("[INFO] 角速度:", asset.data.root_ang_vel_w[0,:])
@@ -261,28 +466,20 @@ def move_acceleration(
     print("[INFO] 线加速度:", asset.data.body_lin_acc_w[0, :])
     print("[INFO] 角加速度:", asset.data.body_ang_acc_w[0, :])
 
-    ang_acc_vec = ang_acc.unsqueeze(-1)   # 从 shape [N, 3] 变成 [N, 3, 1]
+    ang_acc_vec = ang_acc_world.unsqueeze(-1)   # 从 shape [N, 3] 变成 [N, 3, 1]
     # 获取刚体质量和惯性（注意此处假设只有一个body）
     mass = asset.data.default_mass.to(asset.device)[env_ids].unsqueeze(-1)
     inertia = asset.data.default_inertia.to(asset.device)[env_ids]  # [N, 9]
     inertia_mat = inertia.view(-1, 3, 3)                            # 从 shape [N, 9] 变成 [N, 3, 3]
-
-    # print("[INFO] 质量:", mass)
-    # print("[INFO] inertia:", inertia)
-    # 使用全部元素
-    force = mass * lin_acc.unsqueeze(1) # +  mass * gravity                   # [N, 1, 3]
+    # 使用全部元素 - 使用世界坐标系下的加速度
+    force = mass * lin_acc_world.unsqueeze(1) # +  mass * gravity                   # [N, 1, 3]
     torque = torch.matmul(inertia_mat, ang_acc_vec).squeeze(-1)  # [N, 3]
+
 
     # # 只使用对角线元素
     # inertia_diag = torch.diag_embed(inertia[:, [0,4,8]])
     # torque = torch.matmul(inertia_diag, ang_acc_vec).squeeze(-1) 
     # print("[INFO] 力矩:", torque)
-   
-    # GMY
-    # print("[INFO] 速度:", torch.cat([asset.data.root_lin_vel_b, asset.data.root_ang_vel_b], dim=-1))
-    
-    # 更新最后一次计算时间
-    # setattr(env, '_last_acceleration_time', current_time)
 
     asset.set_external_force_and_torque(
         forces=force,
@@ -290,10 +487,6 @@ def move_acceleration(
         body_ids=[0],             # 默认主刚体索引为0
         env_ids=env_ids,
     )
-
-    # 应用加速度后设置标志位为True
-    # setattr(env, '_acceleration_applied', True)
-
 # import pandas as pd
 # import os
 def get_acceleration_row(acc_tensor: torch.Tensor, i: int, N: int) -> torch.Tensor:
@@ -1433,18 +1626,20 @@ def reset_root_state_uniform(
     ranges = torch.tensor(range_list, device=asset.device)
     rand_samples = math_utils.sample_uniform(ranges[:, 0], ranges[:, 1], (len(env_ids), 6), device=asset.device)
 
-    # positions = root_states[:, 0:3] + env.scene.env_origins[env_ids] + rand_samples[:, 0:3]
-    
-    # # platform 
-    platform = env.scene["platform"]
+    # GMY platform
+    if "platform" in env.scene.keys():
+        # # platform 
+        platform = env.scene["platform"]
 
-    # # 固定在平台上方某高度，比如 2 * platform_z + 0.6
-    platform_pos = platform.data.root_com_pos_w[env_ids]
-    height_offset = 0.5 * platform.cfg.spawn.size[2] + 0.6  # 米
+        # # 固定在平台上方某高度，比如 2 * platform_z + 0.6
+        platform_pos = platform.data.root_com_pos_w[env_ids]
+        height_offset = 0.5 * platform.cfg.spawn.size[2] + 0.6  # 米
 
-    positions = platform_pos.clone()
-    positions[:, 2] += height_offset
-    positions[:, 0:2] += rand_samples[:, 0:2] + 10
+        positions = platform_pos.clone()
+        positions[:, 2] += height_offset
+        positions[:, 0:2] += rand_samples[:, 0:2] + 10
+    else:
+        positions = root_states[:, 0:3] + env.scene.env_origins[env_ids] + rand_samples[:, 0:3]
 
     orientations_delta = math_utils.quat_from_euler_xyz(rand_samples[:, 3], rand_samples[:, 4], rand_samples[:, 5])
     orientations = math_utils.quat_mul(root_states[:, 3:7], orientations_delta)
@@ -2120,6 +2315,32 @@ def _randomize_prop_by_op(
             f"Unknown operation: '{operation}' for property randomization. Please use 'add', 'scale', or 'abs'."
         )
     return data
+
+
+def save_comparison_data(env, env_id):
+    """保存对比数据到文件"""
+    import numpy as np
+    import os
+    
+    if not hasattr(env, '_comparison_data') or env_id not in env._comparison_data:
+        return
+    
+    comp_data = env._comparison_data[env_id]
+    
+    # 创建保存目录
+    save_dir = "/home/user/IsaacLab/comparison_data"
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # 保存数据
+    filename = f"{save_dir}/env_{env_id}_step_{comp_data['step_count']}.npz"
+    np.savez(filename,
+             isaaclab_eta_history=np.array(comp_data['isaaclab_eta_history']),
+             isaaclab_nu_history=np.array(comp_data['isaaclab_nu_history']),
+             calculated_eta_history=np.array(comp_data['calculated_eta_history']),
+             calculated_nu_history=np.array(comp_data['calculated_nu_history']),
+             step_count=comp_data['step_count'])
+    
+    print(f"对比数据已保存到: {filename}")
 
 
 def _validate_scale_range(
