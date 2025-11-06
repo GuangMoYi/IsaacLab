@@ -1538,11 +1538,11 @@ class VesselControlSystem:
             is_tensor = False
             
         # 更新内部状态（直接使用IsaacLab的状态）
-        self.eta[:] = current_eta_np
-        self.nu[:] = current_nu_np
+        # 注意：不要直接修改self.eta，而是使用输入的current_eta_np进行计算
+        # 因为我们返回的是下一个时刻的位置，所以需要在当前位置基础上积分
         
         # 生成测量噪声（降低噪声水平）
-        y = self.eta[[0, 1, 5]] 
+        y = current_eta_np[[0, 1, 5]] 
         
         # 参考轨迹计算
         eta_r, eta_r_dot = self.reference[0:3], self.reference[3:6]
@@ -1552,8 +1552,8 @@ class VesselControlSystem:
         # 使用观测器（恢复完整的观测器功能）
         y_hat = self.x_hat[0:3]
         # self.x_hat, self.b_hat, self.xi_hat, self.nu_hat = self.observer_dynamics(self.u, y, y_hat)
-        self.x_hat = np.concatenate([self.eta[[0, 1, 5]], self.nu[[0, 1, 5]]])
-        self.nu_hat = self.nu[[0, 1, 5]]
+        self.x_hat = np.concatenate([current_eta_np[[0, 1, 5]], current_nu_np[[0, 1, 5]]])
+        self.nu_hat = current_nu_np[[0, 1, 5]]
         self.b_hat.fill(0)
         self.xi_hat.fill(0)
         
@@ -1566,31 +1566,39 @@ class VesselControlSystem:
         current_control_acceleration += self.inv_M @ wave_loads
         
         # 计算位置导数，使用预分配数组
-        R = self.Rzyx(self.eta[3:6])
-        T_mat = self.T_Theta(self.eta[3:6])
+        # 使用输入的current_eta_np而不是self.eta来计算旋转矩阵
+        R = self.Rzyx(current_eta_np[3:6])
+        T_mat = self.T_Theta(current_eta_np[3:6])
         
         # 使用预分配数组避免临时数组创建
-        self._temp_eta_dot[:3] = R @ self.nu[:3]
-        self._temp_eta_dot[3:6] = T_mat @ self.nu[3:6]
+        # 使用输入的current_nu_np计算位置导数
+        self._temp_eta_dot[:3] = R @ current_nu_np[:3]
+        self._temp_eta_dot[3:6] = T_mat @ current_nu_np[3:6]
         eta_dot = self._temp_eta_dot.copy()
         
-        # 内部状态更新（用于控制器计算，但不影响IsaacLab物理引擎）
-        self.eta += eta_dot * self.dt
-        self.nu += current_control_acceleration * self.dt
+        # 计算下一个时刻的位置（积分）
+        # 在当前位置基础上积分，得到下一个时刻的位置
+        next_eta = current_eta_np + eta_dot * self.dt
+        next_nu = current_nu_np + current_control_acceleration * self.dt
+        
+        # 更新内部状态（用于下一次调用）
+        self.eta[:] = next_eta
+        self.nu[:] = next_nu
         
         # 更新参考轨迹
         self.reference += reference_dot * self.dt
         
         # 根据输入类型返回相应格式的结果
+        # 返回下一个时刻的位置和当前位置导数
         if is_tensor:
             import torch
-            return torch.from_numpy(current_control_acceleration).to(
+            return torch.from_numpy(next_eta).to(
                 dtype=current_eta.dtype, device=current_eta.device
             ), torch.from_numpy(eta_dot).to(
                 dtype=current_eta.dtype, device=current_eta.device
             )
         else:
-            return current_control_acceleration, eta_dot
+            return next_eta, eta_dot
     
     def generate_wave_loads_jonswap(self, t):
         """

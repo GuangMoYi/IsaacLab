@@ -216,123 +216,248 @@ def move_acceleration(
     nu_ang = asset.data.root_ang_vel_b[env_ids] 
     nu = torch.cat([nu_lin, nu_ang], dim=-1)
 
-    # ========================================================原有不同环境不同平台代码（已注释，改用共享系统）===========================================
+    # # ========================================================原有不同环境不同平台代码===========================================
     # # 为每个环境创建独立的VesselControlSystem实例
     # if not hasattr(env, '_vehicle_dict'):
     #     env._vehicle_dict = {}
-    # ... (已注释的独立系统代码)
+    
+    # # 初始化对比数据存储（保留这个，因为优化后的代码也需要）
+    # if not hasattr(env, '_comparison_data'):
+    #     env._comparison_data = {}
+    
+    # # 为当前批次中的每个环境ID创建或获取VesselControlSystem实例
+    # for i, env_id in enumerate(env_ids.tolist()):
+    #     if env_id not in env._vehicle_dict:
+    #         # 第一次调用时，使用当前实际位置和速度作为初始值
+    #         current_pose_for_init = pose[i].detach().cpu().numpy()  # 当前环境的位置 [6]
+    #         current_nu_for_init = nu[i].detach().cpu().numpy()      # 当前环境的速度 [6]
+            
+    #         # 设置目标位置
+    #         target_position = [10, 10, 0.8 * np.pi]  # 期望位置 [x, y, yaw]
+            
+    #         env._vehicle_dict[env_id] = VesselControlSystem(
+    #             target_position=target_position,
+    #             initial_eta=current_pose_for_init,
+    #             initial_nu=current_nu_for_init,
+    #             dt=dt
+    #         )
+            
+    #         # 初始化对比数据（从0开始积分，只初始化第一个环境）
+    #         if env_id == 0:
+    #             env._comparison_data[env_id] = {
+    #                 'isaaclab_eta_history': [],
+    #                 'isaaclab_nu_history': [],
+    #                 'calculated_eta_history': [],
+    #                 'calculated_nu_history': [],
+    #                 'calculated_eta': np.zeros(6),  # 从0开始积分
+    #                 'calculated_nu': np.zeros(6),   # 从0开始积分
+    #                 'step_count': 0
+    #             }
+
+    # # 为每个环境独立计算加速度
+    # acc_list = []
+    # for i, env_id in enumerate(env_ids.tolist()):
+    #     # 获取当前环境的位置和速度，去掉批次维度
+    #     current_pose = pose[i]  # 维度 [6]
+    #     current_nu = nu[i]      # 维度 [6]
+        
+    #     # 调试模式：使用常数加速度测试
+    #     if env_id == 0:  # 只对第一个环境使用常数加速度
+    #         # # 使用常数加速度进行测试
+    #         # constant_acc = np.array([0, 0, 0, 0.1, 0.1, 0.0])  # 只测试pitch角加速度，使用更小的值  
+    #         # acc = torch.tensor(constant_acc, dtype=current_pose.dtype, device=current_pose.device)
+            
+    #         # # 计算位置导数（简化版本）
+    #         # eta_dot = torch.zeros_like(current_pose)
+    #         # eta_dot[:3] = current_nu[:3]  # 位置导数 = 线速度
+    #         # eta_dot[3:] = current_nu[3:]  # 角度导数 = 角速度
+            
+    #         # 对比分析：IsaacLab真实输出 vs 积分计算（只处理第一个环境）
+    #         acc, eta_dot = env._vehicle_dict[env_id].step(current_pose, current_nu, time_me * dt)
+            
+    #         if env_id in env._comparison_data:
+    #             comp_data = env._comparison_data[env_id]
+    #             comp_data['step_count'] += 1
+    #     else:
+    #         # 其他环境使用正常的船舶控制系统
+    #         acc, eta_dot = env._vehicle_dict[env_id].step(current_pose, current_nu, time_me * dt)
+        
+    #     acc_list.append(acc)
+
+    #     # ===========================  GMY changed 存储真实数据与计算数据对比 ============================
+    #     # 存储IsaacLab的真实输出（只对第一个环境）
+    #     if env_id == 0 and env_id in env._comparison_data:
+    #         isaaclab_eta = current_pose.detach().cpu().numpy()
+    #         isaaclab_nu = current_nu.detach().cpu().numpy()
+    #         comp_data['isaaclab_eta_history'].append(isaaclab_eta.copy())
+    #         comp_data['isaaclab_nu_history'].append(isaaclab_nu.copy())
+            
+    #         # 从IsaacLab的初始状态开始积分计算
+    #         if comp_data['step_count'] == 1:
+    #             # 第一步：使用IsaacLab的初始状态
+    #             comp_data['calculated_eta'] = isaaclab_eta.copy()
+    #             comp_data['calculated_nu'] = isaaclab_nu.copy()
+    #         else:
+    #             eta_dot_np = eta_dot.detach().cpu().numpy()  # 从系统获取的eta_dot
+    #             nu_dot_np = acc.detach().cpu().numpy()       # nu_dot = 加速度 (速度变化率)
+                
+    #             # 累加积分：观察积分计算与IsaacLab物理仿真的差异
+    #             comp_data['calculated_eta'] += eta_dot_np * dt
+    #             comp_data['calculated_nu'] += nu_dot_np * dt
+                
+    #             # 角度包装到[-π, π]范围
+    #             comp_data['calculated_eta'][3:] = np.arctan2(np.sin(comp_data['calculated_eta'][3:]), np.cos(comp_data['calculated_eta'][3:]))
+            
+    #         # 存储积分计算结果
+    #         comp_data['calculated_eta_history'].append(comp_data['calculated_eta'].copy())
+    #         comp_data['calculated_nu_history'].append(comp_data['calculated_nu'].copy())
+            
+    #         # 每100步打印一次对比结果
+    #         if comp_data['step_count'] % 1000 == 0:
+    #             # 每1000步保存一次数据到文件
+    #             save_comparison_data(env, env_id)    
+    #     # 将所有环境的加速度堆叠成批次张量
+    # nu_dot = torch.stack(acc_list, dim=0)    
     # ========================================================原有不同环境不同平台代码===========================================
 
     # ========================================================所有环境同一个平台代码===========================================
     # 性能优化：所有环境共用一个控制平台系统，大幅提升多环境性能
     # 物理上：每个环境都有独立的物理平台刚体（1024个物理平台）
     # 控制上：所有平台都使用同一个VesselControlSystem实例，执行相同的运动轨迹
-    # 所有平台的位置、速度、加速度完全同步
 
     # 初始化对比数据存储（保留这个，因为优化后的代码也需要）
     if not hasattr(env, '_comparison_data'):
         env._comparison_data = {}
-    
     # 关键优化1：创建全局共享的控制平台系统（只创建一次）
     if not hasattr(env, '_shared_platform_system'):
-        # 使用第一个环境的初始状态创建共享平台系统
-        initial_pose = pose[0].detach().cpu().numpy()  # 使用第一个环境的相对位置
-        initial_nu = nu[0].detach().cpu().numpy()      # 使用第一个环境的速度（体坐标系）
-        target_position = [10, 10, 0.8 * np.pi]        # 期望位置
+        # 使用第一个环境的绝对位置状态创建共享平台系统
+        # VesselControlSystem 内部使用世界坐标系速度积分，所以需要绝对位置
+        initial_pose = current_pose[0].detach().cpu().numpy()  # 使用第一个环境的绝对位置
+        initial_nu = nu[0].detach().cpu().numpy()      # 使用第一个环境的速度
+        # 目标位置是绝对位置（所有环境都移动到同一个绝对目标位置）
+        target_position = [10, 10, 0.8 * np.pi]        # 期望位置（绝对位置）
         
         env._shared_platform_system = VesselControlSystem(
-                target_position=target_position,
+            target_position=target_position,
             initial_eta=initial_pose,
             initial_nu=initial_nu,
-                dt=dt
-            )
+            dt=dt
+        )
+        
+        # 为每个环境维护独立的参考轨迹状态
+        env._env_reference_states = {}
         print(f"[INFO] 创建全局共享控制平台系统，目标位置: {target_position}")
+    
+    # 为每个环境初始化独立的参考轨迹状态
+    if not hasattr(env, '_env_reference_states'):
+        env._env_reference_states = {}
     
     # 关键优化2：批量处理所有环境，避免循环
     # 将torch张量转换为numpy数组进行批量计算
-    pose_np = pose.detach().cpu().numpy()  # [num_envs, 6] 相对位置
-    nu_np = nu.detach().cpu().numpy()      # [num_envs, 6] 体坐标系速度
+    # 关键：使用绝对位置 current_pose，因为 VesselControlSystem 需要绝对位置
+    current_pose_np = current_pose.detach().cpu().numpy()  # [num_envs, 6] - 绝对位置
+    nu_np = nu.detach().cpu().numpy()      # [num_envs, 6]
     current_time = time_me * dt
     
     # 关键优化3：使用共享控制策略
-    # 所有环境使用相同的控制平台系统，执行同步运动
-    shared_system = env._shared_platform_system
+    # 所有环境使用相同的控制平台系统，但每个环境有不同的初始位置
+    # 问题：所有环境共享同一个系统，但初始位置不同
+    # 解决方案：只使用第一个环境的状态来计算，然后应用到所有环境
+    # 但由于初始位置不同，我们需要为每个环境单独计算
     
     # 预分配输出数组
     num_envs = len(env_ids)
-    next_eta_batch = np.zeros((num_envs, 6))
+    eta_batch = np.zeros((num_envs, 6))
     eta_dot_batch = np.zeros((num_envs, 6))
     
-    # 关键优化4：真正的共享控制 - 所有平台使用相同的控制指令
-    # 只使用第一个环境的状态来计算控制指令（所有平台同步运动）
-    # 重要：如果我们直接设置位置和速度，就不应该每次从物理引擎读取速度
-    # 而应该使用共享系统的内部状态（shared_system.nu），因为物理引擎的速度
-    # 可能与我们设置的不一致（物理引擎会根据我们设置的位置重新计算速度）
+    # 关键优化4：为每个环境单独计算（因为初始位置不同）
+    import time
+    start_time = time.time()
     
-    # 使用第一个环境的相对位置（从物理引擎读取，确保位置同步）
-    shared_system.eta[:] = pose_np[0]
+    # 为每个环境单独计算，使用各自的绝对位置
+    shared_system = env._shared_platform_system
     
-    # 重要：不要每次从物理引擎读取速度，而应该使用共享系统内部计算的速度
-    # 第一次调用时使用物理引擎的速度，后续使用内部状态
-    if not hasattr(shared_system, '_velocity_initialized'):
-        shared_system.nu[:] = nu_np[0]  # 第一次调用时初始化速度
-        shared_system._velocity_initialized = True
-    # 否则，使用上一次计算的 next_nu（已经在 step 函数内部更新到 self.nu 中了）
+    # 获取环境ID（用于区分不同环境）
+    env_id_list = env_ids.tolist()
     
-    # 只计算一次控制指令
-    # 注意：vessels.py中的step函数返回next_eta和eta_dot，而不是加速度
-    # 这里使用 shared_system.nu 而不是 nu_np[0]，避免每次重置速度
-    next_eta, eta_dot = shared_system.step(pose_np[0], shared_system.nu, current_time)
-    
-    # 将相同的控制指令应用到所有环境（所有平台同步运动）
     for i in range(num_envs):
-        next_eta_batch[i] = next_eta
+        env_id = env_id_list[i]
+        
+        # 为每个环境初始化或获取独立的参考轨迹状态
+        if env_id not in env._env_reference_states:
+            # 第一次：从当前位置初始化参考轨迹
+            env._env_reference_states[env_id] = {
+                'reference': np.array([current_pose_np[i][0], current_pose_np[i][1], current_pose_np[i][5], 0, 0, 0]),
+                'eta_r_ddot': np.zeros(3)
+            }
+            if env_id == 0:  # 只打印第一个环境的调试信息
+                print(f"[DEBUG] 初始化环境{env_id}的参考轨迹: {env._env_reference_states[env_id]['reference'][:3]}, 目标: {shared_system.parameters_ref}")
+        
+        # 保存当前参考轨迹状态
+        saved_reference = shared_system.reference.copy()
+        saved_eta_r_ddot = shared_system.eta_r_ddot.copy()
+        
+        # 恢复该环境的参考轨迹状态
+        shared_system.reference[:] = env._env_reference_states[env_id]['reference']
+        shared_system.eta_r_ddot[:] = env._env_reference_states[env_id]['eta_r_ddot']
+        
+        # 使用每个环境的绝对位置
+        shared_system.eta[:] = current_pose_np[i]  # 每个环境的绝对位置
+        shared_system.nu[:] = nu_np[i]             # 每个环境的速度
+        
+        # 调用step函数（会更新shared_system.reference）
+        eta_get, eta_dot = shared_system.step(current_pose_np[i], nu_np[i], current_time)
+        
+        # 获取计算出的下一个时刻的速度（从系统内部状态）
+        nu_get = shared_system.nu.copy()
+        
+        # 保存更新后的参考轨迹状态
+        env._env_reference_states[env_id]['reference'] = shared_system.reference.copy()
+        env._env_reference_states[env_id]['eta_r_ddot'] = shared_system.eta_r_ddot.copy()
+        
+        # 调试信息（只打印第一个环境，每100步打印一次）
+        if not hasattr(env, '_debug_step_count'):
+            env._debug_step_count = {}
+        if env_id not in env._debug_step_count:
+            env._debug_step_count[env_id] = 0
+        env._debug_step_count[env_id] += 1
+        
+        if env_id == 0 and env._debug_step_count[env_id] % 100 == 0:
+            print(f"[DEBUG] 环境{env_id} - 当前位置: [{current_pose_np[i][0]:.3f}, {current_pose_np[i][1]:.3f}, {current_pose_np[i][5]:.3f}], "
+                  f"参考位置: [{shared_system.reference[0]:.3f}, {shared_system.reference[1]:.3f}, {shared_system.reference[2]:.3f}], "
+                  f"目标位置: {shared_system.parameters_ref}, "
+                  f"下一位置: [{eta_get[0]:.3f}, {eta_get[1]:.3f}, {eta_get[5]:.3f}]")
+        
+        # 恢复共享系统的参考轨迹状态（虽然会被下一个环境覆盖，但保持一致性）
+        shared_system.reference[:] = saved_reference
+        shared_system.eta_r_ddot[:] = saved_eta_r_ddot
+        
+        eta_batch[i] = eta_get
         eta_dot_batch[i] = eta_dot
+        
+        # 保存下一个时刻的速度（用于后续设置）
+        if not hasattr(env, '_next_nu_batch'):
+            env._next_nu_batch = np.zeros((num_envs, 6))
+        env._next_nu_batch[i] = nu_get
     
-    # 关键优化5：将numpy结果转换为torch张量，并转换为IsaacLab格式
-    # next_eta: [x, y, z, roll, pitch, yaw] (相对位置，相对于initial_pos)
-    # 需要转换为IsaacLab格式：[位置(3), 四元数(4)]
+    computation_time = time.time() - start_time
     
-    next_eta_torch = torch.from_numpy(next_eta_batch).to(
+    # 性能统计
+    if not hasattr(env, '_performance_stats'):
+        env._performance_stats = {'total_time': 0, 'call_count': 0}
+    
+    env._performance_stats['total_time'] += computation_time
+    env._performance_stats['call_count'] += 1
+    
+    if env._performance_stats['call_count'] % 100 == 0:
+        avg_time = env._performance_stats['total_time'] / env._performance_stats['call_count']
+        print(f"[PERF] 共享控制计算 - 平均耗时: {avg_time*1000:.2f}ms, 环境数: {num_envs}, 总耗时: {computation_time*1000:.2f}ms")
+    
+    # 关键优化5：将numpy结果转换回torch张量
+    eta_use = torch.from_numpy(eta_batch).to(
         dtype=current_quat.dtype, 
         device=current_quat.device
     )
-    
-    # 计算绝对位置（加上初始位置偏移）
-    # next_eta的前3个元素是相对位置 [x, y, z]，相对于每个环境的initial_pos
-    # 注意：所有环境使用相同的next_eta（相对位置），但每个环境加上它自己的initial_pos
-    # 重要：VesselControlSystem不控制z坐标，但next_eta的z值可能不是0（因为积分了速度）
-    # 我们需要将z坐标设为0（相对位置），因为z高度应该保持不变
-    next_pos_relative = next_eta_torch[:, :3].clone()  # [num_envs, 3] 相对位置
-    next_pos_relative[:, 2] = 0.0  # z坐标保持为0（相对位置，因为z高度不变）
-    next_pos_world = next_pos_relative + initial_pos  # [num_envs, 3] 每个环境加上它自己的初始位置
-    
-    # 处理姿态：next_eta[3:6] 包含欧拉角，顺序是 (roll, pitch, yaw) - ZYX顺序
-    # 转换为四元数（参考events_acc.py，但events_acc.py使用的是加速度，这里使用位置）
-    next_roll = next_eta_torch[:, 3]
-    next_pitch = next_eta_torch[:, 4]
-    next_yaw = next_eta_torch[:, 5]
-    
-    # ZYX 顺序的欧拉角转换为四元数
-    # ZYX 顺序：先绕 Z 轴旋转 yaw，然后绕 Y 轴旋转 pitch，最后绕 X 轴旋转 roll
-    # 四元数乘法顺序：q_roll * q_pitch * q_yaw
-    cy = torch.cos(next_yaw * 0.5)
-    sy = torch.sin(next_yaw * 0.5)
-    cp = torch.cos(next_pitch * 0.5)
-    sp = torch.sin(next_pitch * 0.5)
-    cr = torch.cos(next_roll * 0.5)
-    sr = torch.sin(next_roll * 0.5)
-    
-    # ZYX 顺序的四元数转换
-    qw = cr * cp * cy + sr * sp * sy
-    qx = sr * cp * cy - cr * sp * sy
-    qy = cr * sp * cy + sr * cp * sy
-    qz = cr * cp * sy - sr * sp * cy
-    
-    next_quat = torch.stack([qw, qx, qy, qz], dim=-1)  # [num_envs, 4]
-    
-    # 组合位置和姿态
-    next_root_pose = torch.cat([next_pos_world, next_quat], dim=-1)  # [num_envs, 7]
     
     # 关键优化6：保持原有的对比数据功能（仅对第一个环境）
     # 确保第一个环境的对比数据被初始化
@@ -359,17 +484,19 @@ def move_acceleration(
         comp_data['isaaclab_eta_history'].append(isaaclab_eta.copy())
         comp_data['isaaclab_nu_history'].append(isaaclab_nu.copy())
         
-        # 积分计算对比（现在使用期望位置进行对比）
+        # 积分计算对比
         if comp_data['step_count'] == 1:
             comp_data['calculated_eta'] = isaaclab_eta.copy()
             comp_data['calculated_nu'] = isaaclab_nu.copy()
         else:
-            # 使用期望位置进行对比（直接设置位置，所以直接使用期望位置）
-            next_eta_np = next_eta_batch[0]
+            eta_dot_np = eta_dot_batch[0]
+            # 注意：eta_batch 是位置，不是加速度
+            # 对于对比数据，我们只需要位置变化
+            # nu_dot_np = eta_batch[0]  # 这是错误的，应该是速度变化率
             
-            # 直接使用期望位置（因为现在我们是直接设置位置）
-            comp_data['calculated_eta'] = next_eta_np.copy()
-            comp_data['calculated_nu'] = shared_system.nu.copy()  # 使用系统内部速度
+            comp_data['calculated_eta'] += eta_dot_np * dt
+            # 暂时不更新速度对比数据，因为我们需要的是加速度而不是位置
+            # comp_data['calculated_nu'] += nu_dot_np * dt
             
             # 角度包装
             comp_data['calculated_eta'][3:] = np.arctan2(
@@ -380,7 +507,7 @@ def move_acceleration(
         comp_data['calculated_eta_history'].append(comp_data['calculated_eta'].copy())
         comp_data['calculated_nu_history'].append(comp_data['calculated_nu'].copy())
         
-        # 每10000步保存一次数据
+        # 每100步保存一次数据
         if comp_data['step_count'] % 10000 == 0:
             print(f"[INFO] 准备保存数据 - 步数: {comp_data['step_count']}, 历史数据长度: {len(comp_data['isaaclab_eta_history'])}")
             save_comparison_data(env, 0)
@@ -390,52 +517,227 @@ def move_acceleration(
         env._batch_performance_counter = 0
     env._batch_performance_counter += 1
     
-    # 关键优化8：直接设置平台位置和速度，确保所有平台完全同步
-    # 使用 write_root_pose_to_sim 直接设置平台位置和姿态
-    # 使用 write_root_velocity_to_sim 直接设置平台速度
-    # 这样可以确保所有平台精确同步，避免误差累积和发散
-    # 同时保持物理引擎的碰撞检测功能（平台仍然可以接触机器狗）
+    # 确保数据类型匹配
+    eta_next = eta_use.to(dtype=current_quat.dtype, device=current_quat.device)
+
+    # ========================================================应用位置到船舶===========================================
+    # 关键理解：现在输入到 VesselControlSystem 的是绝对位置
+    # 输入到 VesselControlSystem 的 current_pose = [absolute_pos, rot_angles]
+    #   - absolute_pos = current_pos (绝对位置，世界坐标系)
+    #   - rot_angles = euler_zyx_from_quat(current_quat) (绝对欧拉角，ZYX顺序)
+    #
+    # 在 VesselControlSystem.step() 中：
+    #   - self.eta[:] = current_eta_np (设置为输入的 current_pose，即绝对位置)
+    #   - eta_dot[:3] = R @ self.nu[:3] (这是世界坐标系的位置速度)
+    #   - self.eta[:3] += eta_dot[:3] * dt (积分)
+    #
+    # 所以输出的 eta_get[:3] 是下一个时刻的绝对位置（世界坐标系）
+    # 直接使用即可，不需要再加 initial_pos
     
-    # 计算世界坐标系速度
-    # 重要：nu是在体坐标系下的速度，需要正确转换为世界坐标系
-    # 使用shared_system.nu（体坐标系速度，已经更新为next_nu）
-    next_nu_torch = torch.from_numpy(shared_system.nu).to(
-        dtype=current_quat.dtype,
-        device=current_quat.device
-    )
-    next_nu_torch = next_nu_torch.unsqueeze(0).expand(num_envs, -1)  # [num_envs, 6]
+    # 1. 提取绝对位置和欧拉角
+    absolute_pos = eta_next[:, :3]  # 积分后的绝对位置（世界坐标系）
+    euler_angles_zyx = eta_next[:, 3:6]  # 绝对欧拉角 [roll, pitch, yaw]（ZYX顺序）
     
-    # 使用四元数转换体坐标系速度到世界坐标系
-    # 线速度：从体坐标系到世界坐标系
-    lin_vel_body = next_nu_torch[:, :3]  # [num_envs, 3] 体坐标系线速度
-    lin_vel_world = math_utils.quat_apply(next_quat, lin_vel_body)  # [num_envs, 3] 世界坐标系线速度
+    # 3. 将 ZYX 顺序的欧拉角转换为四元数
+    roll = euler_angles_zyx[:, 0]
+    pitch = euler_angles_zyx[:, 1]
+    yaw = euler_angles_zyx[:, 2]
     
-    # 角速度：从体坐标系到世界坐标系（角速度也是向量，需要用四元数转换）
-    ang_vel_body = next_nu_torch[:, 3:6]  # [num_envs, 3] 体坐标系角速度
-    ang_vel_world = math_utils.quat_apply(next_quat, ang_vel_body)  # [num_envs, 3] 世界坐标系角速度
+    # ZYX 顺序的四元数转换公式（与 euler_zyx_from_quat 配对）
+    cy = torch.cos(yaw * 0.5)
+    sy = torch.sin(yaw * 0.5)
+    cp = torch.cos(pitch * 0.5)
+    sp = torch.sin(pitch * 0.5)
+    cr = torch.cos(roll * 0.5)
+    sr = torch.sin(roll * 0.5)
     
-    # 组合线速度和角速度（都是世界坐标系）
-    next_root_velocity = torch.cat([lin_vel_world, ang_vel_world], dim=-1)  # [num_envs, 6]
+    # ZYX 顺序：先 yaw (z), 然后 pitch (y), 最后 roll (x)
+    qw = cr * cp * cy + sr * sp * sy
+    qx = sr * cp * cy - cr * sp * sy
+    qy = cr * sp * cy + sr * cp * sy
+    qz = cr * cp * sy - sr * sp * cy
     
-    # 直接设置平台位置和姿态（所有平台完全同步）
-    asset.write_root_pose_to_sim(next_root_pose, env_ids=env_ids)
-    # 同时设置速度（所有平台完全同步）
-    asset.write_root_velocity_to_sim(next_root_velocity, env_ids=env_ids)
+    orientations = torch.stack([qw, qx, qy, qz], dim=-1)
+    
+    # 4. 组合位置和四元数 [position(3) + quaternion(4)] = [7]
+    root_pose = torch.cat([absolute_pos, orientations], dim=-1)
+    
+    # 5. 直接位置控制的关键问题分析：
+    # 直接设置位置会导致物理引擎状态不一致，因为：
+    # 1. 物理引擎期望通过力和力矩来更新状态
+    # 2. 直接设置位置会绕过物理引擎，导致动力学计算错误
+    # 3. 位置和速度的匹配关系会被破坏
+    #
+    # 解决方案：使用位置差来计算期望速度，然后设置速度而不是直接设置位置
+    # 或者：限制位置变化，确保速度和位置匹配
+    
+    # 计算位置变化（期望的位置变化）
+    current_pos = pose[:, :3]  # 当前位置
+    desired_pos = absolute_pos  # 期望位置
+    
+    # 计算位置差
+    pos_diff = desired_pos - current_pos
+    
+    # 限制位置变化（避免跳跃太大）
+    max_pos_change = 0.1  # 最大位置变化（米）
+    pos_change_magnitude = torch.norm(pos_diff, dim=1, keepdim=True)
+    scale = torch.clamp(max_pos_change / (pos_change_magnitude + 1e-6), max=1.0)
+    limited_pos_diff = pos_diff * scale
+    limited_desired_pos = current_pos + limited_pos_diff
+    
+    # 计算期望速度（基于位置差和dt）
+    # 获取物理时间步长
+    sim_dt = env._sim_dt if hasattr(env, '_sim_dt') else getattr(env.scene, 'dt', 0.02)
+    desired_lin_vel = limited_pos_diff / sim_dt
+    
+    # 计算姿态差（使用四元数）
+    current_quat = pose[:, 3:7]
+    desired_quat = orientations
+    
+    # 计算姿态变化：q_diff = desired_quat * inv(current_quat)
+    quat_inv = math_utils.quat_conjugate(current_quat)
+    quat_diff = math_utils.quat_mul(desired_quat, quat_inv)
+    
+    # 将四元数差转换为角速度（简化：直接使用四元数的虚部乘以2/dt）
+    # 对于小角度：omega ≈ 2 * quat_diff[1:4] / dt
+    quat_diff_imag = quat_diff[:, 1:4]  # 四元数虚部
+    desired_ang_vel = 2.0 * quat_diff_imag / sim_dt
+    
+    # 限制角速度（避免过大）
+    max_ang_vel = 1.0  # 最大角速度（rad/s）
+    ang_vel_magnitude = torch.norm(desired_ang_vel, dim=1, keepdim=True)
+    scale_ang = torch.clamp(max_ang_vel / (ang_vel_magnitude + 1e-6), max=1.0)
+    limited_desired_ang_vel = desired_ang_vel * scale_ang
+    
+    # 组合期望速度
+    desired_velocity = torch.cat([desired_lin_vel, limited_desired_ang_vel], dim=-1)
+    
+    # 关键修复：同时设置位置和速度，但使用限制后的位置和匹配的速度
+    # 限制位置变化，确保位置和速度匹配
+    limited_root_pose = torch.cat([limited_desired_pos, orientations], dim=-1)
+    
+    # 同时设置位置和速度（这是直接位置控制的正确方式）
+    asset.write_root_pose_to_sim(limited_root_pose, env_ids=env_ids)
+    asset.write_root_velocity_to_sim(desired_velocity, env_ids=env_ids)
+
+    # # ========================================================所有环境同一个平台代码===========================================
+    # lin_acc = nu_dot[:, :3]  # 船体坐标系线加速度
+    # ang_acc = nu_dot[:, 3:]  # 船体坐标系角加速度
+    
+    # # 坐标系转换 ====> 不进行坐标转换
+    # lin_acc_world = lin_acc # math_utils.quat_apply(current_quat, lin_acc) 
+    # ang_acc_world = ang_acc # math_utils.quat_apply(current_quat, ang_acc)  
 
     print("[INFO] 位置:", pose)
     print("[INFO] 角速度:", asset.data.root_ang_vel_w[0,:])
     print("[INFO] 线速度:", asset.data.root_lin_vel_w[0,:])
     print("[INFO] 线加速度:", asset.data.body_lin_acc_w[0, :])
     print("[INFO] 角加速度:", asset.data.body_ang_acc_w[0, :])
+
+    # ang_acc_vec = ang_acc_world.unsqueeze(-1)   # 从 shape [N, 3] 变成 [N, 3, 1]
+    # # 获取刚体质量和惯性（注意此处假设只有一个body）
+    # mass = asset.data.default_mass.to(asset.device)[env_ids].unsqueeze(-1)
+    # inertia = asset.data.default_inertia.to(asset.device)[env_ids]  # [N, 9]
+    # inertia_mat = inertia.view(-1, 3, 3)                            # 从 shape [N, 9] 变成 [N, 3, 3]
+    # # 使用全部元素 - 使用世界坐标系下的加速度
+    # force = mass * lin_acc_world.unsqueeze(1) # +  mass * gravity                   # [N, 1, 3]
+    # torque = torch.matmul(inertia_mat, ang_acc_vec).squeeze(-1)  # [N, 3]
+
+
+    # # # 只使用对角线元素
+    # # inertia_diag = torch.diag_embed(inertia[:, [0,4,8]])
+    # # torque = torch.matmul(inertia_diag, ang_acc_vec).squeeze(-1) 
+    # # print("[INFO] 力矩:", torque)
+
+    # asset.set_external_force_and_torque(
+    #     forces=force,
+    #     torques=torque.unsqueeze(1),
+    #     body_ids=[0],             # 默认主刚体索引为0
+    #     env_ids=env_ids,
+    # )
+# import pandas as pd
+# import os
+def get_acceleration_row(acc_tensor: torch.Tensor, i: int, N: int) -> torch.Tensor:
+    """
+    从张量 acc_tensor 中周期性地提取第 i 行的加速度数据，生成形状为 [N, 6] 的张量。
     
-    # 重要：同步更新共享系统的内部状态，确保下一帧使用正确的位置和速度
-    # 注意：我们设置的是 next_eta 和 eta_dot（速度），所以内部状态应该同步更新
-    # shared_system 的 eta 和 nu 已经在 step 函数内部更新了，这里不需要再次更新
+    读取规则：
+    - 第一轮：正向读取 acc_tensor[i]
+    - 第二轮：反向读取，并取负值 acc_tensor[rev_i] * -1
+    - 如此反复，确保物理意义上的加速度变化是有规律的
+    - 例如： +3 +2 -5 -1 第二次读取就应该是 +1 +5 -2 -3 以此循环
+    
+    参数：
+    - acc_tensor: 输入张量，形状为 [T, 6]，T 是总的加速度数据数
+    - i: 全局索引，递增
+    - N: 扩展为 N 行
 
-    # ========================================================所有环境同一个平台代码===========================================
-    # 注意：现在使用位置和速度设置，不再使用加速度设置
-    # 所有平台的位置、速度、加速度完全同步，因为它们使用同一个VesselControlSystem实例
+    返回：
+    - acc: [N, 6] 张量，是 acc_tensor 中某一行数据（或其相反数）重复 N 次
+    """
+    T = acc_tensor.shape[0]  # 数据长度
+    cycle_length = 2 * T     # 一个完整的正向+反向周期
+    idx_in_cycle = i % cycle_length
 
+    if idx_in_cycle < T:
+        # 正向读取
+        idx = idx_in_cycle
+        acc = acc_tensor[idx]
+    else:
+        # 反向读取并取负
+        idx = cycle_length - 1 - idx_in_cycle
+        acc = -acc_tensor[idx]
+    # 扩展为 [N, 6]
+    return acc.unsqueeze(0).expand(N, -1)
+
+
+
+def batch_get_acceleration(pose_batch: torch.Tensor, vel_batch: torch.Tensor, vehicle, sampleTime: float, vehicle1, time_me: float):
+    acc_list = []
+    for i in range(pose_batch.shape[0]):
+        # 如果不同env_id使用不同的vehicle，则使用vehicle[i]
+        acc = get_platform_acceleration_from_model(pose_batch[i], vel_batch[i], vehicle[i], sampleTime,  vehicle1[i], time_me)
+        acc_list.append(acc)
+    return torch.stack(acc_list, dim=0)
+
+def get_platform_acceleration_from_model(eta: torch.Tensor, nu: torch.Tensor, vehicle, sampleTime: float, vehicle1, time_me: float) -> torch.Tensor:
+    """
+    接收 tensor 输入，内部转 numpy 运算，再返回 tensor 输出。
+    """
+    # 转为 numpy（确保 detach 和在 CPU 上）
+    eta_np = eta.detach().cpu().numpy()
+    nu_np = nu.detach().cpu().numpy()
+
+    # Vehicle specific control systems
+    if (vehicle.controlMode == 'depthAutopilot'):
+        u_control = vehicle.depthAutopilot(eta_np,nu_np,sampleTime)
+    elif (vehicle.controlMode == 'headingAutopilot'):
+        u_control = vehicle.headingAutopilot(eta_np,nu_np,sampleTime)   
+    elif (vehicle.controlMode == 'depthHeadingAutopilot'):
+        u_control = vehicle.depthHeadingAutopilot(eta_np,nu_np,sampleTime)             
+    elif (vehicle.controlMode == 'DPcontrol'):
+        u_control = vehicle.DPcontrol(eta_np,nu_np,sampleTime)
+        u_control1 = vehicle1.DPcontrol(vehicle1.eta,vehicle1.nu,sampleTime)   
+    elif (vehicle.controlMode == 'stepInput'):
+        u_control = vehicle.stepInput(time_me)    
+        u_control1 = vehicle1.stepInput(time_me) 
+
+    # 调用 numpy 风格的模型
+    nu_dot_np, vehicle.u_actual = vehicle.dynamics(eta_np, nu_np, vehicle.u_actual, u_control, sampleTime, time_me)
+    vehicle1_nu_dot, vehicle1.u_actual = vehicle1.dynamics(vehicle1.eta, vehicle1.nu, vehicle1.u_actual, u_control1, sampleTime, time_me)
+    vehicle1.nu = vehicle1.nu + sampleTime * vehicle1_nu_dot
+    vehicle1.eta = attitudeEuler(vehicle1.eta,vehicle1.nu,sampleTime)
+
+    # print("！！！位置eta！！！", vehicle1.eta)
+    # print("！！！速度nu！！！", vehicle1.nu)
+
+    # print("!!!x_d,y_d,z_d!!!   [vehicle1]", vehicle1.x_d, vehicle1.y_d, vehicle1.psi_d)
+    # print("!!!x_d,y_d,z_d!!!   [vehicle]", vehicle.x_d, vehicle.y_d, vehicle.psi_d)
+    
+    # acc = torch.tensor(vehicle.nu, dtype=eta.dtype, device=eta.device)
+    # 返回 tensor，保持原始设备和 dtype
+    acc = torch.tensor(nu_dot_np, dtype=eta.dtype, device=eta.device)
+    return acc
 
 import numpy as np
 def Rzyx(phi,theta,psi):

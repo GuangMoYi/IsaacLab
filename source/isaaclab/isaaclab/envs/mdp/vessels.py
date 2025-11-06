@@ -1584,13 +1584,13 @@ class VesselControlSystem:
         # 根据输入类型返回相应格式的结果
         if is_tensor:
             import torch
-            return torch.from_numpy(current_control_acceleration).to(
+            return torch.from_numpy(self.eta).to(
                 dtype=current_eta.dtype, device=current_eta.device
             ), torch.from_numpy(eta_dot).to(
                 dtype=current_eta.dtype, device=current_eta.device
             )
         else:
-            return current_control_acceleration, eta_dot
+            return self.eta, eta_dot
     
     def generate_wave_loads_jonswap(self, t):
         """
@@ -1612,7 +1612,7 @@ class VesselControlSystem:
         if _global_wave_table_cache is None:
             print("[INFO] 首次初始化全局波浪预计算系统...")
             
-            Hs = 0.0
+            Hs = 0.1
             Tp = 8
             g = 9.81
             omega_p = 2 * np.pi / Tp
