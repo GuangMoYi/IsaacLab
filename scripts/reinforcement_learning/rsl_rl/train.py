@@ -185,6 +185,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # 为RSL-RL包装环境
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)  # 使用RSL-RL向量环境包装器
+    
+    # GMY: 将 num_steps_per_env 传递给环境对象，供课程学习使用
+    if hasattr(env, 'unwrapped') and hasattr(env.unwrapped, '__class__'):
+        env.unwrapped._num_steps_per_env = agent_cfg.num_steps_per_env
 
     # 从RSL-RL创建训练器    
     if agent_cfg.class_name == "OnPolicyRunner":  # 如果是策略梯度训练器

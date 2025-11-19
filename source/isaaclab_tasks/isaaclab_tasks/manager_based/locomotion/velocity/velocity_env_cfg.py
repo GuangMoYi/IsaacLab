@@ -160,7 +160,12 @@ class CommandsCfg:
         heading_control_stiffness=0.5,
         debug_vis=True,
         ranges=mdp.UniformVelocityCommandCfg.Ranges(
-            lin_vel_x=(-1.0, 1.0), lin_vel_y=(-1.0, 1.0), ang_vel_z=(-1.0, 1.0), heading=(-math.pi, math.pi)
+            # 恢复正常速度命令范围，让机器狗能够正常运动
+            # 注意：机器狗需要先学会在平台上正常走路，然后再学习跟随平台
+            lin_vel_x=(-1.5, 2.0),      # 前进速度范围（m/s）
+            lin_vel_y=(-1.0, 1.0),      # 侧向速度范围（m/s）
+            ang_vel_z=(-1.5, 1.5),      # 角速度范围（rad/s）
+            heading=(-math.pi, math.pi)  # 朝向范围
         ),
     )
 
@@ -199,6 +204,77 @@ class ObservationsCfg:
             noise=Unoise(n_min=0, n_max=0),                                             # (n_min=-0.1, n_max=0.1)
             clip=(-1.0, 1.0),
         )
+        
+        # ========== 平台观测（两种模式：延迟预测 vs 上帝视角） ==========
+        # 模式1：延迟预测模式（使用神经网络预测，需要历史数据和预测）
+        # 注意：当前使用"上帝视角"模式，下面的延迟预测观测已注释
+        # 平台历史姿态（t-5之前的roll和pitch）
+        # platform_history_orientation = ObsTerm(
+        #     func=mdp.platform_history_orientation,
+        #     params={
+        #         "delay_steps": 5,  # 使用t-5之前的数据
+        #         "history_length": 10,  # 历史长度
+        #     },
+        #     noise=Unoise(n_min=0, n_max=0),
+        # )
+        # # 平台历史角速度（t-5之前的roll和pitch角速度）
+        # platform_history_angular_velocity = ObsTerm(
+        #     func=mdp.platform_history_angular_velocity,
+        #     params={
+        #         "delay_steps": 5,  # 使用t-5之前的数据
+        #         "history_length": 10,  # 历史长度
+        #     },
+        #     noise=Unoise(n_min=0, n_max=0),
+        # )
+        # # 预测的当前平台姿态（基于t-5之前的数据预测当前时刻）
+        # platform_predicted_orientation = ObsTerm(
+        #     func=mdp.platform_predicted_orientation,
+        #     params={
+        #         "delay_steps": 5,  # 使用t-5之前的数据预测当前时刻
+        #     },
+        #     noise=Unoise(n_min=0, n_max=0),
+        # )
+        # # 预测的当前平台角速度（基于t-5之前的数据预测当前时刻）
+        # platform_predicted_angular_velocity = ObsTerm(
+        #     func=mdp.platform_predicted_angular_velocity,
+        #     params={
+        #         "delay_steps": 5,  # 使用t-5之前的数据预测当前时刻
+        #     },
+        #     noise=Unoise(n_min=0, n_max=0),
+        # )
+        
+        # 模式2：上帝视角模式（直接观测当前平台状态，无延迟，用于对比实验）
+        # 关键改进：即使使用"上帝视角"，也需要添加历史观测，让机器狗学习运动规律
+        # 当前平台姿态（上帝视角，直接使用当前时刻的平台roll和pitch）
+        platform_current_orientation = ObsTerm(
+            func=mdp.platform_current_orientation,
+            noise=Unoise(n_min=0, n_max=0),
+        )
+        # 当前平台角速度（上帝视角，直接使用当前时刻的平台roll和pitch角速度）
+        platform_current_angular_velocity = ObsTerm(
+            func=mdp.platform_current_angular_velocity,
+            noise=Unoise(n_min=0, n_max=0),
+        )
+        # 关键：添加平台历史观测，让机器狗能够学习运动规律
+        # 平台历史姿态（最近N个时刻的roll和pitch，用于学习运动模式）
+        platform_history_orientation = ObsTerm(
+            func=mdp.platform_history_orientation,
+            params={
+                "delay_steps": 0,  # 使用当前时刻之前的数据（无延迟）
+                "history_length": 20,  # 历史长度：20步（约0.4秒，足够学习正弦运动规律）
+            },
+            noise=Unoise(n_min=0, n_max=0),
+        )
+        # 平台历史角速度（最近N个时刻的roll和pitch角速度）
+        platform_history_angular_velocity = ObsTerm(
+            func=mdp.platform_history_angular_velocity,
+            params={
+                "delay_steps": 0,  # 使用当前时刻之前的数据（无延迟）
+                "history_length": 20,  # 历史长度：20步
+            },
+            noise=Unoise(n_min=0, n_max=0),
+        )
+        # ============================================================================
 
 
         # 允许注入观测扰动（比如噪声、传感器掉线等鲁棒训练用手段）
@@ -207,14 +283,41 @@ class ObservationsCfg:
             self.concatenate_terms = True
     @configclass
     class DebugCfg(ObsGroup):
-        platform_ang_acc = ObsTerm(func=mdp.platform_ang_acc_w)
-        platform_lin_acc = ObsTerm(func=mdp.platform_lin_acc_w)
-        platform_ang_vel = ObsTerm(func=mdp.platform_ang_vel_w)
-        platform_lin_vel = ObsTerm(func=mdp.platform_lin_vel_w)
-        platform_ang_w = ObsTerm(func=mdp.platform_ang_w)
-        platform_pos_w = ObsTerm(func=mdp.platform_pos_w)
+        # platform_ang_acc = ObsTerm(func=mdp.platform_ang_acc_w)
+        # platform_lin_acc = ObsTerm(func=mdp.platform_lin_acc_w)
+        # platform_ang_vel = ObsTerm(func=mdp.platform_ang_vel_w)
+        # platform_lin_vel = ObsTerm(func=mdp.platform_lin_vel_w)
+        # platform_ang_w = ObsTerm(func=mdp.platform_ang_w)
+        # platform_pos_w = ObsTerm(func=mdp.platform_pos_w)
         # robot_ang_acc_w = ObsTerm(func=mdp.robot_ang_acc_w)
         # robot_lin_acc_w = ObsTerm(func=mdp.robot_lin_acc_w)
+        
+        # ========== 新增：相对静止评估指标 ==========
+        # 基座与平台姿态误差（rad）- 值越小表示基座与平台越平行
+        # 这是机器狗基座XY平面和平台XY平面之间的误差
+        base_platform_orientation_error = ObsTerm(func=mdp.base_platform_orientation_error_metric)
+        
+        # 平台自身姿态误差（rad）- 用于对比，应该接近0
+        # 这是平台XY平面和水平0面的误差
+        platform_orientation_error = ObsTerm(func=mdp.platform_orientation_error_metric)
+        
+        # 机器人相对于平台的角速度误差（rad/s）- 值越小表示角速度越同步
+        robot_relative_ang_vel_error = ObsTerm(func=mdp.robot_relative_ang_vel_error_metric)
+        
+        # 机器狗误差和平台误差的比值（用于评估跟随效果）
+        # 比值 = 机器狗基座与平台姿态误差 / 平台自身姿态误差
+        # 比值越小，说明机器狗跟随效果越好（机器狗误差相对于平台误差很小）
+        orientation_error_ratio = ObsTerm(func=mdp.orientation_error_ratio_metric)
+        # ========== 新增：机器狗运动指标 ==========
+        # 机器狗线速度大小（m/s）- 用于监控机器狗是否在运动
+        robot_lin_vel_magnitude = ObsTerm(func=mdp.robot_lin_vel_magnitude)
+        # 机器狗角速度大小（rad/s）- 用于监控机器狗是否在运动
+        robot_ang_vel_magnitude = ObsTerm(func=mdp.robot_ang_vel_magnitude)
+        # 机器狗线速度（世界坐标系，m/s）
+        robot_lin_vel_w = ObsTerm(func=mdp.robot_lin_vel_w)
+        # 机器狗角速度（世界坐标系，rad/s）
+        robot_ang_vel_w = ObsTerm(func=mdp.robot_ang_vel_w)
+        # ============================================
 
         def __post_init__(self):
             # 这一组不拼接为策略输入，只用于可视化或 log
@@ -346,16 +449,18 @@ class EventCfg:
 class RewardsCfg:
     """Reward terms for the MDP."""
 
-    # -- task
+    # -- task (保持速度跟踪，让机器狗能够运动)
     track_lin_vel_xy_exp = RewTerm(
-        func=mdp.track_lin_vel_xy_exp, weight=1.0, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
+        func=mdp.track_lin_vel_xy_exp, weight=1.5, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
     )
     track_ang_vel_z_exp = RewTerm(
-        func=mdp.track_ang_vel_z_exp, weight=0.5, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
+        func=mdp.track_ang_vel_z_exp, weight=0.75, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
     )
     # -- penalties
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
-    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
+    # 关键修改：禁用ang_vel_xy_l2惩罚，因为机器狗需要roll和pitch角速度来跟随平台运动
+    # 如果惩罚roll/pitch角速度，机器狗无法调整姿态来跟随平台
+    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=0.0)  # 改为0.0，不禁用但权重为0 原来是-0.05
     dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-5)
     dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
@@ -373,9 +478,28 @@ class RewardsCfg:
         weight=-1.0,
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*THIGH"), "threshold": 1.0},
     )
-    # -- optional penalties
+    # -- optional penalties (权重为0，其他配置文件可以覆盖)
     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=0.0)
     dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=0.0)
+    
+    # -- platform following reward (核心功能：让机器狗跟随平台运动)
+    # 注意：权重需要与其他奖励平衡，不能太高导致忽略基本运动能力
+    # 初期机器狗需要先学会基本平衡和运动，所以跟随奖励权重不能太高
+    platform_following_with_history = RewTerm(
+        func=mdp.platform_following_with_history_exp,
+        weight=10.0,  # 提高权重：从5.0提高到10.0，让平台跟随成为主要任务
+        params={
+            "std_orientation": 0.08,  # 减小std：从0.2减小到0.08，使奖励函数更"尖锐"，在小误差时梯度更大
+            # 当误差=0.065时，奖励=exp(-0.065/0.08)≈0.44（之前是0.72），梯度更大
+            # 当误差=0.035时，奖励=exp(-0.035/0.08)≈0.65（之前是0.84），仍有足够奖励
+            "std_angular_velocity": 0.1,  # 角速度误差的标准差（平台最大角速度约0.016 rad/s，设置为0.1可以覆盖合理范围）
+            "prediction_horizon": 0.2,
+            "history_length": 50,
+            "use_god_view": True,  # 是否使用"上帝视角"（直接使用当前平台状态，无延迟）
+            # 设置为True：机器狗可以直接观测到当前平台状态，用于对比实验
+            # 设置为False：使用神经网络预测平台状态（需要延迟观测和预测）
+        }
+    )
 
 
 @configclass
@@ -394,6 +518,9 @@ class CurriculumCfg:
     """Curriculum terms for the MDP."""
 
     terrain_levels = CurrTerm(func=mdp.terrain_levels_vel)
+    
+    # 注意：不再使用课程学习来调整跟随平台奖励权重
+    # 现在使用延迟观测和预测的方法，机器狗可以直接学习跟随平台运动
 
 
 ##

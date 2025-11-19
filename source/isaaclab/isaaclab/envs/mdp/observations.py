@@ -36,7 +36,7 @@ from isaaclab.envs.utils.io_descriptors import (
 
 
 # GMY changed: 平台观测量
-from isaaclab.utils.math import euler_xyz_from_quat
+from isaaclab.utils.math import euler_xyz_from_quat, euler_zyx_from_quat
 
 # 平台角加速度（世界坐标系）
 @generic_io_descriptor(
@@ -118,6 +118,454 @@ def platform_ang_w(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntity
         device=asset.data.root_quat_w.device,
         dtype=asset.data.root_quat_w.dtype,
     )
+
+## GMY changed: 相对静止==观测值
+# 平台线速度（在机器人体坐标系下）
+@generic_io_descriptor(
+    units="m/s",
+    axes=["X", "Y", "Z"],
+    observation_type="PlatformState",
+    on_inspect=[record_shape, record_dtype],
+)
+def platform_lin_vel_b(
+    env: ManagerBasedEnv,
+    platform_cfg: SceneEntityCfg = SceneEntityCfg("platform"),
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Platform linear velocity in robot body frame."""
+    platform: RigidObject = env.scene[platform_cfg.name]
+    robot: Articulation = env.scene[robot_cfg.name]
+    # 平台世界坐标系速度
+    platform_vel_w = platform.data.root_lin_vel_w
+    # 转换到机器人体坐标系
+    platform_vel_b = math_utils.quat_apply_inverse(robot.data.root_quat_w, platform_vel_w)
+    return platform_vel_b
+
+
+# 平台角速度（在机器人体坐标系下）
+@generic_io_descriptor(
+    units="rad/s",
+    axes=["X", "Y", "Z"],
+    observation_type="PlatformState",
+    on_inspect=[record_shape, record_dtype],
+)
+def platform_ang_vel_b(
+    env: ManagerBasedEnv,
+    platform_cfg: SceneEntityCfg = SceneEntityCfg("platform"),
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Platform angular velocity in robot body frame."""
+    platform: RigidObject = env.scene[platform_cfg.name]
+    robot: Articulation = env.scene[robot_cfg.name]
+    # 平台世界坐标系角速度
+    platform_ang_vel_w = platform.data.root_ang_vel_w
+    # 转换到机器人体坐标系
+    platform_ang_vel_b = math_utils.quat_apply_inverse(robot.data.root_quat_w, platform_ang_vel_w)
+    return platform_ang_vel_b
+
+
+# 平台姿态（欧拉角，在机器人体坐标系下）
+@generic_io_descriptor(
+    units="rad",
+    axes=["Roll", "Pitch", "Yaw"],
+    observation_type="PlatformState",
+    on_inspect=[record_shape, record_dtype],
+)
+def platform_ang_b(
+    env: ManagerBasedEnv,
+    platform_cfg: SceneEntityCfg = SceneEntityCfg("platform"),
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Platform orientation (Euler angles) in robot body frame."""
+    platform: RigidObject = env.scene[platform_cfg.name]
+    robot: Articulation = env.scene[robot_cfg.name]
+    # 计算相对旋转：platform相对于robot的旋转
+    # q_rel = q_platform * q_robot^-1
+    q_rel = math_utils.quat_mul(
+        platform.data.root_quat_w,
+        math_utils.quat_conjugate(robot.data.root_quat_w)
+    )
+    roll, pitch, yaw = euler_xyz_from_quat(q_rel)
+    return torch.stack([roll, pitch, yaw], dim=-1).to(
+        device=platform.data.root_quat_w.device,
+        dtype=platform.data.root_quat_w.dtype,
+    )
+
+
+# 机器人相对于平台的线速度（在机器人体坐标系下）
+@generic_io_descriptor(
+    units="m/s",
+    axes=["X", "Y", "Z"],
+    observation_type="RelativeVelocity",
+    on_inspect=[record_shape, record_dtype],
+)
+def robot_relative_lin_vel_to_platform(
+    env: ManagerBasedEnv,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    platform_cfg: SceneEntityCfg = SceneEntityCfg("platform"),
+) -> torch.Tensor:
+    """Robot relative linear velocity to platform in robot body frame."""
+    robot: Articulation = env.scene[robot_cfg.name]
+    platform: RigidObject = env.scene[platform_cfg.name]
+    
+    # 机器狗和平台的世界坐标系速度
+    robot_vel_w = robot.data.root_lin_vel_w
+    platform_vel_w = platform.data.root_lin_vel_w
+    
+    # 计算相对速度（世界坐标系）
+    rel_vel_w = robot_vel_w - platform_vel_w
+    
+    # 转换到机器人体坐标系
+    rel_vel_b = math_utils.quat_apply_inverse(robot.data.root_quat_w, rel_vel_w)
+    
+    return rel_vel_b
+
+
+# 机器人相对于平台的角速度（在机器人体坐标系下）
+@generic_io_descriptor(
+    units="rad/s",
+    axes=["X", "Y", "Z"],
+    observation_type="RelativeVelocity",
+    on_inspect=[record_shape, record_dtype],
+)
+def orientation_error_ratio_metric(
+    env: ManagerBasedEnv,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    platform_cfg: SceneEntityCfg = SceneEntityCfg("platform"),
+) -> torch.Tensor:
+    """计算机器狗误差和平台误差的比值（用于评估跟随效果）。
+    
+    比值 = 机器狗基座与平台姿态误差 / 平台自身姿态误差
+    比值越小，说明机器狗跟随效果越好（机器狗误差相对于平台误差很小）
+    """
+    robot = env.scene[robot_cfg.name]
+    platform = env.scene[platform_cfg.name]
+    
+    # 计算机器狗基座与平台姿态误差
+    q_rel = math_utils.quat_mul(
+        platform.data.root_quat_w,
+        math_utils.quat_conjugate(robot.data.root_quat_w)
+    )
+    rel_roll, rel_pitch, _ = euler_zyx_from_quat(q_rel)
+    robot_platform_error = torch.sqrt(rel_roll**2 + rel_pitch**2 + 1e-8)
+    
+    # 计算平台自身姿态误差
+    platform_roll, platform_pitch, _ = euler_zyx_from_quat(platform.data.root_quat_w)
+    platform_error = torch.sqrt(platform_roll**2 + platform_pitch**2 + 1e-8)
+    
+    # 计算比值（避免除零）
+    ratio = robot_platform_error / (platform_error + 1e-8)
+    
+    return ratio
+
+
+def robot_relative_ang_vel_to_platform(
+    env: ManagerBasedEnv,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    platform_cfg: SceneEntityCfg = SceneEntityCfg("platform"),
+) -> torch.Tensor:
+    """Robot relative angular velocity to platform in robot body frame."""
+    robot: Articulation = env.scene[robot_cfg.name]
+    platform: RigidObject = env.scene[platform_cfg.name]
+    
+    # 机器狗和平台的世界坐标系角速度
+    robot_ang_vel_w = robot.data.root_ang_vel_w
+    platform_ang_vel_w = platform.data.root_ang_vel_w
+    
+    # 计算相对角速度（世界坐标系）
+    rel_ang_vel_w = robot_ang_vel_w - platform_ang_vel_w
+    
+    # 转换到机器人体坐标系
+    rel_ang_vel_b = math_utils.quat_apply_inverse(robot.data.root_quat_w, rel_ang_vel_w)
+    
+    return rel_ang_vel_b
+
+
+# 机器人相对于平台的位置（在平台坐标系下，只考虑xy平面）
+@generic_io_descriptor(
+    units="m",
+    axes=["X", "Y"],
+    observation_type="RelativePosition",
+    on_inspect=[record_shape, record_dtype],
+)
+def robot_relative_pos_to_platform_xy(
+    env: ManagerBasedEnv,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    platform_cfg: SceneEntityCfg = SceneEntityCfg("platform"),
+) -> torch.Tensor:
+    """Robot relative position to platform in platform frame (xy plane only)."""
+    robot: Articulation = env.scene[robot_cfg.name]
+    platform: RigidObject = env.scene[platform_cfg.name]
+    
+    # 机器狗和平台的世界坐标系位置
+    robot_pos_w = robot.data.root_pos_w
+    platform_pos_w = platform.data.root_pos_w
+    
+    # 计算相对位置（世界坐标系）
+    rel_pos_w = robot_pos_w - platform_pos_w
+    
+    # 转换到平台坐标系（只考虑xy平面）
+    platform_quat_inv = math_utils.quat_conjugate(platform.data.root_quat_w)
+    rel_pos_p = math_utils.quat_apply(platform_quat_inv, rel_pos_w)
+    
+    # 只返回xy平面
+    return rel_pos_p[:, :2]
+
+
+# 机器人线速度（世界坐标系，用于监控机器狗运动）
+@generic_io_descriptor(
+    units="m/s",
+    axes=["X", "Y", "Z"],
+    observation_type="RobotState",
+    on_inspect=[record_shape, record_dtype],
+)
+def robot_lin_vel_w(
+    env: ManagerBasedEnv,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Robot linear velocity in world frame (for monitoring robot movement)."""
+    robot: Articulation = env.scene[robot_cfg.name]
+    return robot.data.root_lin_vel_w
+
+
+# 机器人角速度（世界坐标系，用于监控机器狗运动）
+@generic_io_descriptor(
+    units="rad/s",
+    axes=["X", "Y", "Z"],
+    observation_type="RobotState",
+    on_inspect=[record_shape, record_dtype],
+)
+def robot_ang_vel_w(
+    env: ManagerBasedEnv,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Robot angular velocity in world frame (for monitoring robot movement)."""
+    robot: Articulation = env.scene[robot_cfg.name]
+    return robot.data.root_ang_vel_w
+
+
+# 机器人线速度大小（用于监控机器狗是否在运动）
+@generic_io_descriptor(
+    units="m/s",
+    axes=["Magnitude"],
+    observation_type="RobotState",
+    on_inspect=[record_shape, record_dtype],
+)
+def robot_lin_vel_magnitude(
+    env: ManagerBasedEnv,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Robot linear velocity magnitude (for monitoring if robot is moving)."""
+    robot: Articulation = env.scene[robot_cfg.name]
+    lin_vel = robot.data.root_lin_vel_w
+    return torch.linalg.norm(lin_vel, dim=1, keepdim=True)
+
+
+# ========== 平台历史数据和预测观测（用于机器狗学习跟随平台） ==========
+# 平台历史姿态（t-5之前的roll和pitch，展平为向量）
+@generic_io_descriptor(
+    units="rad",
+    observation_type="PlatformHistory",
+    on_inspect=[record_shape, record_dtype],
+)
+def platform_history_orientation(
+    env: ManagerBasedEnv,
+    delay_steps: int = 5,
+    history_length: int = 10,
+    platform_cfg: SceneEntityCfg = SceneEntityCfg("platform"),
+) -> torch.Tensor:
+    """平台历史姿态（t-delay_steps之前的roll和pitch）
+    
+    返回展平的历史数据：[roll_history, pitch_history]，形状为 [num_envs, history_length*2]
+    """
+    if not hasattr(env, 'get_platform_delayed_history'):
+        # 如果环境不支持，返回零
+        num_envs = env.scene[platform_cfg.name].data.root_quat_w.shape[0]
+        device = env.scene[platform_cfg.name].data.root_quat_w.device
+        return torch.zeros(num_envs, history_length * 2, device=device)
+    
+    history_data = env.get_platform_delayed_history(delay_steps=delay_steps, history_length=history_length)
+    
+    if history_data is None:
+        num_envs = env.scene[platform_cfg.name].data.root_quat_w.shape[0]
+        device = env.scene[platform_cfg.name].data.root_quat_w.device
+        return torch.zeros(num_envs, history_length * 2, device=device)
+    
+    # 展平历史数据：[roll_history, pitch_history]
+    history_roll = history_data['roll']  # [num_envs, history_length]
+    history_pitch = history_data['pitch']  # [num_envs, history_length]
+    
+    # 拼接为 [num_envs, history_length*2]
+    return torch.cat([history_roll, history_pitch], dim=1)
+
+
+# 平台历史角速度（t-5之前的roll和pitch角速度，展平为向量）
+@generic_io_descriptor(
+    units="rad/s",
+    observation_type="PlatformHistory",
+    on_inspect=[record_shape, record_dtype],
+)
+def platform_history_angular_velocity(
+    env: ManagerBasedEnv,
+    delay_steps: int = 5,
+    history_length: int = 10,
+    platform_cfg: SceneEntityCfg = SceneEntityCfg("platform"),
+) -> torch.Tensor:
+    """平台历史角速度（t-delay_steps之前的roll和pitch角速度）
+    
+    返回展平的历史数据：[roll_ang_vel_history, pitch_ang_vel_history]，形状为 [num_envs, history_length*2]
+    """
+    if not hasattr(env, 'get_platform_delayed_history'):
+        num_envs = env.scene[platform_cfg.name].data.root_quat_w.shape[0]
+        device = env.scene[platform_cfg.name].data.root_quat_w.device
+        return torch.zeros(num_envs, history_length * 2, device=device)
+    
+    history_data = env.get_platform_delayed_history(delay_steps=delay_steps, history_length=history_length)
+    
+    if history_data is None:
+        num_envs = env.scene[platform_cfg.name].data.root_quat_w.shape[0]
+        device = env.scene[platform_cfg.name].data.root_quat_w.device
+        return torch.zeros(num_envs, history_length * 2, device=device)
+    
+    # 展平历史数据：[roll_ang_vel_history, pitch_ang_vel_history]
+    history_roll_ang_vel = history_data['roll_ang_vel']  # [num_envs, history_length]
+    history_pitch_ang_vel = history_data['pitch_ang_vel']  # [num_envs, history_length]
+    
+    # 拼接为 [num_envs, history_length*2]
+    return torch.cat([history_roll_ang_vel, history_pitch_ang_vel], dim=1)
+
+
+# 预测的当前平台姿态（基于t-5之前的数据预测当前时刻）
+@generic_io_descriptor(
+    units="rad",
+    axes=["Roll", "Pitch"],
+    observation_type="PlatformPrediction",
+    on_inspect=[record_shape, record_dtype],
+)
+def platform_predicted_orientation(
+    env: ManagerBasedEnv,
+    delay_steps: int = 5,
+    platform_cfg: SceneEntityCfg = SceneEntityCfg("platform"),
+) -> torch.Tensor:
+    """预测的当前平台姿态（基于t-delay_steps之前的数据预测当前时刻）
+    
+    返回预测的roll和pitch：[predicted_roll, predicted_pitch]，形状为 [num_envs, 2]
+    """
+    if not hasattr(env, 'get_platform_prediction_for_observation'):
+        num_envs = env.scene[platform_cfg.name].data.root_quat_w.shape[0]
+        device = env.scene[platform_cfg.name].data.root_quat_w.device
+        return torch.zeros(num_envs, 2, device=device)
+    
+    prediction = env.get_platform_prediction_for_observation(delay_steps=delay_steps)
+    
+    if prediction is None:
+        num_envs = env.scene[platform_cfg.name].data.root_quat_w.shape[0]
+        device = env.scene[platform_cfg.name].data.root_quat_w.device
+        return torch.zeros(num_envs, 2, device=device)
+    
+    # 返回预测的roll和pitch
+    predicted_roll = prediction['roll']  # [num_envs]
+    predicted_pitch = prediction['pitch']  # [num_envs]
+    
+    return torch.stack([predicted_roll, predicted_pitch], dim=1)  # [num_envs, 2]
+
+
+# 预测的当前平台角速度（基于t-5之前的数据预测当前时刻）
+@generic_io_descriptor(
+    units="rad/s",
+    axes=["Roll", "Pitch"],
+    observation_type="PlatformPrediction",
+    on_inspect=[record_shape, record_dtype],
+)
+def platform_predicted_angular_velocity(
+    env: ManagerBasedEnv,
+    delay_steps: int = 5,
+    platform_cfg: SceneEntityCfg = SceneEntityCfg("platform"),
+) -> torch.Tensor:
+    """预测的当前平台角速度（基于t-delay_steps之前的数据预测当前时刻）
+    
+    返回预测的roll和pitch角速度：[predicted_roll_ang_vel, predicted_pitch_ang_vel]，形状为 [num_envs, 2]
+    """
+    if not hasattr(env, 'get_platform_prediction_for_observation'):
+        num_envs = env.scene[platform_cfg.name].data.root_quat_w.shape[0]
+        device = env.scene[platform_cfg.name].data.root_quat_w.device
+        return torch.zeros(num_envs, 2, device=device)
+    
+    prediction = env.get_platform_prediction_for_observation(delay_steps=delay_steps)
+    
+    if prediction is None:
+        num_envs = env.scene[platform_cfg.name].data.root_quat_w.shape[0]
+        device = env.scene[platform_cfg.name].data.root_quat_w.device
+        return torch.zeros(num_envs, 2, device=device)
+    
+    # 返回预测的roll和pitch角速度
+    predicted_roll_ang_vel = prediction['roll_ang_vel']  # [num_envs]
+    predicted_pitch_ang_vel = prediction['pitch_ang_vel']  # [num_envs]
+    
+    return torch.stack([predicted_roll_ang_vel, predicted_pitch_ang_vel], dim=1)  # [num_envs, 2]
+
+
+# ============================================================================
+# 上帝视角：直接观测当前平台状态（无延迟，用于对比实验）
+# ============================================================================
+
+# 当前平台姿态（上帝视角，直接使用当前时刻的平台姿态）
+@generic_io_descriptor(
+    units="rad",
+    axes=["Roll", "Pitch"],
+    observation_type="PlatformState",
+    on_inspect=[record_shape, record_dtype],
+)
+def platform_current_orientation(
+    env: ManagerBasedEnv,
+    platform_cfg: SceneEntityCfg = SceneEntityCfg("platform"),
+) -> torch.Tensor:
+    """当前平台姿态（上帝视角，直接使用当前时刻的平台roll和pitch）
+    
+    返回当前平台的roll和pitch：[current_roll, current_pitch]，形状为 [num_envs, 2]
+    用于对比实验：如果机器狗能直接观测到当前平台状态，能否学会跟随
+    """
+    platform: RigidObject = env.scene[platform_cfg.name]
+    roll, pitch, _ = euler_xyz_from_quat(platform.data.root_quat_w)
+    return torch.stack([roll, pitch], dim=1)  # [num_envs, 2]
+
+
+# 当前平台角速度（上帝视角，直接使用当前时刻的平台角速度）
+@generic_io_descriptor(
+    units="rad/s",
+    axes=["Roll", "Pitch"],
+    observation_type="PlatformState",
+    on_inspect=[record_shape, record_dtype],
+)
+def platform_current_angular_velocity(
+    env: ManagerBasedEnv,
+    platform_cfg: SceneEntityCfg = SceneEntityCfg("platform"),
+) -> torch.Tensor:
+    """当前平台角速度（上帝视角，直接使用当前时刻的平台roll和pitch角速度）
+    
+    返回当前平台的roll和pitch角速度：[current_roll_ang_vel, current_pitch_ang_vel]，形状为 [num_envs, 2]
+    用于对比实验：如果机器狗能直接观测到当前平台状态，能否学会跟随
+    """
+    platform: RigidObject = env.scene[platform_cfg.name]
+    ang_vel = platform.data.root_ang_vel_w
+    return torch.stack([ang_vel[:, 0], ang_vel[:, 1]], dim=1)  # [num_envs, 2] (roll, pitch)
+# ============================================================================
+
+# 机器人角速度大小（用于监控机器狗是否在运动）
+@generic_io_descriptor(
+    units="rad/s",
+    axes=["Magnitude"],
+    observation_type="RobotState",
+    on_inspect=[record_shape, record_dtype],
+)
+def robot_ang_vel_magnitude(
+    env: ManagerBasedEnv,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Robot angular velocity magnitude (for monitoring if robot is moving)."""
+    robot: Articulation = env.scene[robot_cfg.name]
+    ang_vel = robot.data.root_ang_vel_w
+    return torch.linalg.norm(ang_vel, dim=1, keepdim=True)
 
 """
 Root state.

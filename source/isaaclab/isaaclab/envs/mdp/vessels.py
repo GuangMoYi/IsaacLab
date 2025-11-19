@@ -1578,6 +1578,9 @@ class VesselControlSystem:
         self.eta += eta_dot * self.dt
         self.nu += current_control_acceleration * self.dt
         
+        # 关键修复：归一化角度到[-pi, pi]，防止角度累积导致发散
+        self.eta[3:6] = np.arctan2(np.sin(self.eta[3:6]), np.cos(self.eta[3:6]))
+        
         # 更新参考轨迹
         self.reference += reference_dot * self.dt
         
@@ -1620,7 +1623,7 @@ class VesselControlSystem:
             
             # RAO权重系数
             # rao_weights = np.array([0.1, 0.1, 0.1, 0.1, 0.5, 1.0])
-            rao_weights = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+            rao_weights = np.array([1.0, 1.0, 1.0,1.0, 1.0, 1.0])
             
             vessel = self.vessel
             forceRAO = vessel['forceRAO'][0, 0]
