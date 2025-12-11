@@ -276,7 +276,7 @@ def move_acceleration(
         env._platform_motion_history['eta'].append(pose_np.copy())
         env._platform_motion_history['nu'].append(nu_np.copy())
         
-        if current_step == 2000:  # 第1000步（索引999）时保存文件
+        if current_step == 10000:  # 第1000步（索引999）时保存文件
             print(f"[INFO] 前1000步平台运动记录完成，正在保存到文件...")
             eta_array = np.array(env._platform_motion_history['eta'])  # [1000, 6]
             nu_array = np.array(env._platform_motion_history['nu'])     # [1000, 6]

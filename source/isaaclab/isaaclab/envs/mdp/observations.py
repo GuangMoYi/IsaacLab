@@ -511,20 +511,43 @@ def platform_predicted_angular_velocity(
 
 # 当前平台姿态（上帝视角，直接使用当前时刻的平台姿态）
 @generic_io_descriptor(
-    units="rad",
+    units="rad, rad",
     axes=["Roll", "Pitch"],
     observation_type="PlatformState",
     on_inspect=[record_shape, record_dtype],
 )
 def platform_current_orientation(
     env: ManagerBasedEnv,
+    use_platform_observation: bool = True,  # 是否使用平台观测（False时使用从机器狗观测预测）
     platform_cfg: SceneEntityCfg = SceneEntityCfg("platform"),
 ) -> torch.Tensor:
-    """当前平台姿态（上帝视角，直接使用当前时刻的平台roll和pitch）
+    """当前平台姿态（roll和pitch，用于保持XY平面平行）
     
-    返回当前平台的roll和pitch：[current_roll, current_pitch]，形状为 [num_envs, 2]
-    用于对比实验：如果机器狗能直接观测到当前平台状态，能否学会跟随
+    如果 use_platform_observation=True：直接使用平台观测（训练时）
+    如果 use_platform_observation=False：使用从机器狗观测预测的平台姿态（测试时）
+    
+    返回当前平台的roll和pitch：[roll, pitch]，形状为 [num_envs, 2]
+    
+    注意：只返回roll和pitch，因为跟随任务的目标是保持XY平面平行，只需要这两个角度。
+    x, y, z, yaw对跟随任务没有帮助，反而可能引入噪声，增加学习难度。
     """
+    # 检查是否禁用平台观测（测试模式：只使用机器狗观测）
+    if not use_platform_observation:
+        # 使用从机器狗观测预测的平台姿态
+        if hasattr(env, 'get_platform_prediction_from_observations'):
+            prediction = env.get_platform_prediction_from_observations(prediction_steps=1)
+            if prediction is not None:
+                # 只返回roll和pitch（2维）
+                predicted_roll = prediction['roll']  # [num_envs]
+                predicted_pitch = prediction['pitch']  # [num_envs]
+                return torch.stack([predicted_roll, predicted_pitch], dim=1)  # [num_envs, 2]
+        
+        # 如果预测不可用，返回零（避免训练时使用错误的观测）
+        num_envs = env.scene[platform_cfg.name].data.root_quat_w.shape[0]
+        device = env.scene[platform_cfg.name].data.root_quat_w.device
+        return torch.zeros(num_envs, 2, device=device)
+    
+    # 使用平台观测（训练模式）：只返回roll和pitch（2维）
     platform: RigidObject = env.scene[platform_cfg.name]
     roll, pitch, _ = euler_xyz_from_quat(platform.data.root_quat_w)
     return torch.stack([roll, pitch], dim=1)  # [num_envs, 2]
@@ -532,23 +555,195 @@ def platform_current_orientation(
 
 # 当前平台角速度（上帝视角，直接使用当前时刻的平台角速度）
 @generic_io_descriptor(
-    units="rad/s",
+    units="rad/s, rad/s",
     axes=["Roll", "Pitch"],
     observation_type="PlatformState",
     on_inspect=[record_shape, record_dtype],
 )
 def platform_current_angular_velocity(
     env: ManagerBasedEnv,
+    use_platform_observation: bool = True,  # 是否使用平台观测（False时使用从机器狗观测预测）
     platform_cfg: SceneEntityCfg = SceneEntityCfg("platform"),
 ) -> torch.Tensor:
-    """当前平台角速度（上帝视角，直接使用当前时刻的平台roll和pitch角速度）
+    """当前平台角速度（roll和pitch角速度，用于保持XY平面平行）
     
-    返回当前平台的roll和pitch角速度：[current_roll_ang_vel, current_pitch_ang_vel]，形状为 [num_envs, 2]
-    用于对比实验：如果机器狗能直接观测到当前平台状态，能否学会跟随
+    如果 use_platform_observation=True：直接使用平台观测（训练时）
+    如果 use_platform_observation=False：使用从机器狗观测预测的平台角速度（测试时）
+    
+    返回当前平台的roll和pitch角速度：[roll_ang_vel, pitch_ang_vel]，形状为 [num_envs, 2]
+    
+    注意：只返回roll和pitch角速度，因为跟随任务只需要这两个角速度。
+    vx, vy, vz, yaw_ang_vel对跟随任务没有帮助，反而可能引入噪声。
     """
+    # 检查是否禁用平台观测（测试模式：只使用机器狗观测）
+    if not use_platform_observation:
+        # 使用从机器狗观测预测的平台角速度
+        if hasattr(env, 'get_platform_prediction_from_observations'):
+            prediction = env.get_platform_prediction_from_observations(prediction_steps=1)
+            if prediction is not None:
+                # 只返回roll和pitch角速度（2维）
+                predicted_roll_ang_vel = prediction['roll_ang_vel']  # [num_envs]
+                predicted_pitch_ang_vel = prediction['pitch_ang_vel']  # [num_envs]
+                return torch.stack([predicted_roll_ang_vel, predicted_pitch_ang_vel], dim=1)  # [num_envs, 2]
+        
+        # 如果预测不可用，返回零（避免训练时使用错误的观测）
+        num_envs = env.scene[platform_cfg.name].data.root_quat_w.shape[0]
+        device = env.scene[platform_cfg.name].data.root_quat_w.device
+        return torch.zeros(num_envs, 2, device=device)
+    
+    # 使用平台观测（训练模式）：只返回roll和pitch角速度（2维）
     platform: RigidObject = env.scene[platform_cfg.name]
     ang_vel = platform.data.root_ang_vel_w
-    return torch.stack([ang_vel[:, 0], ang_vel[:, 1]], dim=1)  # [num_envs, 2] (roll, pitch)
+    return torch.stack([ang_vel[:, 0], ang_vel[:, 1]], dim=1)  # [num_envs, 2]
+
+
+# ============================================================================
+# 从机器狗观测预测平台运动（关键功能：让机器狗从自身观测学习预测平台）
+# ============================================================================
+
+# 从机器狗观测预测的平台姿态
+@generic_io_descriptor(
+    units="rad, rad",
+    axes=["Roll", "Pitch"],
+    observation_type="PlatformPredictionFromObservations",
+    on_inspect=[record_shape, record_dtype],
+)
+def platform_predicted_orientation_from_observations(
+    env: ManagerBasedEnv,
+    prediction_steps: int = 1,  # 预测未来多少步（默认1步，即下一步）
+    platform_cfg: SceneEntityCfg = SceneEntityCfg("platform"),
+) -> torch.Tensor:
+    """从机器狗观测历史预测的平台姿态（roll和pitch）
+    
+    使用神经网络从机器狗的观测历史（基座速度、角速度、重力投影、关节状态等）预测平台姿态。
+    这是关键功能：让机器狗从自身观测学习预测平台运动规律。
+    
+    返回预测的roll和pitch：[predicted_roll, predicted_pitch]，形状为 [num_envs, 2]
+    
+    注意：只返回roll和pitch，因为跟随任务只需要这两个角度。
+    预测器应该专注于预测roll和pitch，而不是浪费容量预测x, y, z, yaw。
+    """
+    if not hasattr(env, 'get_platform_prediction_from_observations'):
+        num_envs = env.scene[platform_cfg.name].data.root_quat_w.shape[0]
+        device = env.scene[platform_cfg.name].data.root_quat_w.device
+        return torch.zeros(num_envs, 2, device=device)
+    
+    prediction = env.get_platform_prediction_from_observations(prediction_steps=prediction_steps)
+    
+    if prediction is None:
+        num_envs = env.scene[platform_cfg.name].data.root_quat_w.shape[0]
+        device = env.scene[platform_cfg.name].data.root_quat_w.device
+        return torch.zeros(num_envs, 2, device=device)
+    
+    # 只返回roll和pitch（2维）
+    predicted_roll = prediction['roll']  # [num_envs]
+    predicted_pitch = prediction['pitch']  # [num_envs]
+    
+    return torch.stack([predicted_roll, predicted_pitch], dim=1)  # [num_envs, 2]
+
+
+# 从机器狗观测预测的平台角速度
+@generic_io_descriptor(
+    units="rad/s, rad/s",
+    axes=["Roll", "Pitch"],
+    observation_type="PlatformPredictionFromObservations",
+    on_inspect=[record_shape, record_dtype],
+)
+def platform_predicted_angular_velocity_from_observations(
+    env: ManagerBasedEnv,
+    prediction_steps: int = 1,  # 预测未来多少步（默认1步，即下一步）
+    platform_cfg: SceneEntityCfg = SceneEntityCfg("platform"),
+) -> torch.Tensor:
+    """从机器狗观测历史预测的平台角速度（roll和pitch角速度）
+    
+    使用神经网络从机器狗的观测历史（基座速度、角速度、重力投影、关节状态等）预测平台角速度。
+    这是关键功能：让机器狗从自身观测学习预测平台运动规律。
+    
+    返回预测的roll和pitch角速度：[predicted_roll_ang_vel, predicted_pitch_ang_vel]，形状为 [num_envs, 2]
+    
+    注意：只返回roll和pitch角速度，因为跟随任务只需要这两个角速度。
+    预测器应该专注于预测roll和pitch角速度，而不是浪费容量预测vx, vy, vz, yaw_ang_vel。
+    """
+    if not hasattr(env, 'get_platform_prediction_from_observations'):
+        num_envs = env.scene[platform_cfg.name].data.root_quat_w.shape[0]
+        device = env.scene[platform_cfg.name].data.root_quat_w.device
+        return torch.zeros(num_envs, 2, device=device)
+    
+    prediction = env.get_platform_prediction_from_observations(prediction_steps=prediction_steps)
+    
+    if prediction is None:
+        num_envs = env.scene[platform_cfg.name].data.root_quat_w.shape[0]
+        device = env.scene[platform_cfg.name].data.root_quat_w.device
+        return torch.zeros(num_envs, 2, device=device)
+    
+    # 只返回roll和pitch角速度（2维）
+    predicted_roll_ang_vel = prediction['roll_ang_vel']  # [num_envs]
+    predicted_pitch_ang_vel = prediction['pitch_ang_vel']  # [num_envs]
+    
+    return torch.stack([predicted_roll_ang_vel, predicted_pitch_ang_vel], dim=1)  # [num_envs, 2]
+# ============================================================================
+
+# ========== 相对误差观测（关键改进：直接提供误差信息，帮助策略网络学习） ==========
+# 机器狗与平台的姿态误差（roll和pitch方向）
+@generic_io_descriptor(
+    units="rad",
+    axes=["Roll", "Pitch"],
+    observation_type="PlatformError",
+    on_inspect=[record_shape, record_dtype],
+)
+def platform_orientation_error(
+    env: ManagerBasedEnv,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    platform_cfg: SceneEntityCfg = SceneEntityCfg("platform"),
+) -> torch.Tensor:
+    """机器狗与平台的姿态误差（roll和pitch方向）
+    
+    返回姿态误差：[roll_error, pitch_error]，形状为 [num_envs, 2]
+    这个误差是机器狗需要调整的量，直接提供这个信息可以帮助策略网络更快学习
+    """
+    robot: Articulation = env.scene[robot_cfg.name]
+    platform: RigidObject = env.scene[platform_cfg.name]
+    
+    # 获取机器狗和平台的roll和pitch
+    robot_roll, robot_pitch, _ = euler_zyx_from_quat(robot.data.root_quat_w)
+    platform_roll, platform_pitch, _ = euler_zyx_from_quat(platform.data.root_quat_w)
+    
+    # 计算误差（平台姿态 - 机器狗姿态）
+    roll_error = platform_roll - robot_roll
+    pitch_error = platform_pitch - robot_pitch
+    
+    return torch.stack([roll_error, pitch_error], dim=1)  # [num_envs, 2]
+
+
+# 机器狗与平台的角速度误差（roll和pitch方向）
+@generic_io_descriptor(
+    units="rad/s",
+    axes=["Roll", "Pitch"],
+    observation_type="PlatformError",
+    on_inspect=[record_shape, record_dtype],
+)
+def platform_angular_velocity_error(
+    env: ManagerBasedEnv,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    platform_cfg: SceneEntityCfg = SceneEntityCfg("platform"),
+) -> torch.Tensor:
+    """机器狗与平台的角速度误差（roll和pitch方向）
+    
+    返回角速度误差：[roll_ang_vel_error, pitch_ang_vel_error]，形状为 [num_envs, 2]
+    这个误差是机器狗需要调整的角速度，帮助策略网络学习跟随平台运动趋势
+    """
+    robot: Articulation = env.scene[robot_cfg.name]
+    platform: RigidObject = env.scene[platform_cfg.name]
+    
+    # 获取机器狗和平台的角速度
+    robot_ang_vel = robot.data.root_ang_vel_w
+    platform_ang_vel = platform.data.root_ang_vel_w
+    
+    # 计算角速度误差（平台角速度 - 机器狗角速度）
+    roll_ang_vel_error = platform_ang_vel[:, 0] - robot_ang_vel[:, 0]
+    pitch_ang_vel_error = platform_ang_vel[:, 1] - robot_ang_vel[:, 1]
+    
+    return torch.stack([roll_ang_vel_error, pitch_ang_vel_error], dim=1)  # [num_envs, 2]
 # ============================================================================
 
 # 机器人角速度大小（用于监控机器狗是否在运动）

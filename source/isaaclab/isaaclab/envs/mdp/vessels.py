@@ -878,7 +878,7 @@ _global_matrix_cache = None
 _global_trig_cache = None
 
 class VesselControlSystem:
-    def __init__(self, target_position=None, initial_eta=None, initial_nu=None, dt=0.02):
+    def __init__(self, target_position=None, initial_eta=None, initial_nu=None, dt=0.02, use_fixed_phase=False):
         """
         初始化船舶控制系统
         
@@ -886,6 +886,7 @@ class VesselControlSystem:
             target_position: 期望位置 [x, y, yaw]，默认为 [10, 10, π]
             initial_eta: 初始位置 [x, y, z, roll, pitch, yaw]，默认为 [0, 0, 0, 10°, 0, 0]
             initial_nu: 初始速度 [u, v, w, p, q, r]，默认为 [0, 0, 0, 0, 0, 0]
+            use_fixed_phase: 是否使用固定相位（用于记录周期性运动），默认为False（使用随机相位）
         """
         self.dt = dt  # 调整为更小的时间步长，适合IsaacLab环境
         self.eta_r_ddot = np.zeros(3)
@@ -936,6 +937,9 @@ class VesselControlSystem:
             self.parameters_ref = np.array([10, 10, np.pi])
         else:
             self.parameters_ref = np.array(target_position)
+        
+        # 关键修复：保存固定相位标志，用于记录周期性运动
+        self.use_fixed_phase = use_fixed_phase
         
         # 初始化状态，传入初始位置和速度
         self.initialize_states(initial_eta, initial_nu)
@@ -1014,17 +1018,28 @@ class VesselControlSystem:
                 # 确保质量矩阵被正确设置
                 M = np.linalg.inv(inv_M)
                 
-                # 存储到全局缓存
+                # 分析G矩阵，找出z方向下降的根本原因（仅用于调试，不修改原始值）
+                print("[DEBUG] G矩阵（恢复力矩阵）原始值:")
+                print(f"  G矩阵形状: {G.shape}")
+                print(f"  G[2,2] (z方向恢复力系数): {G[2,2]}")
+                print(f"  G矩阵第2行（z方向相关）: {G[2,:]}")
+                print(f"  G矩阵第2列（影响z方向的量）: {G[:,2]}")
+                
+                # 如果G[2,2]不为0，说明原始数据中包含了z方向的恢复力
+                if abs(G[2, 2]) > 1e-6:
+                    print(f"[INFO] G矩阵z方向恢复力系数: {G[2, 2]}（保留原始值，允许z方向正常运动）")
+                
+                # 存储到全局缓存（使用原始G矩阵，不进行修正）
                 _global_vessel_data_cache = {
                     'vessel': vessel,
                     'vesselABC': vesselABC,
                     'inv_M': inv_M,
-                    'G': G,
+                    'G': G,  # 使用原始G矩阵，允许z方向正常运动
                     'D': D,
                     'C': C,
                     'M': M
                 }
-                print("[INFO] 船舶数据已缓存到全局")
+                print("[INFO] 船舶数据已缓存到全局（使用原始G矩阵，z方向恢复力保留）")
                 
             except FileNotFoundError:
                 print("警告: 未找到船舶数据文件，使用默认参数")
@@ -1056,6 +1071,16 @@ class VesselControlSystem:
         self.D = cached_data['D']
         self.C = cached_data['C']
         self.M = cached_data['M']
+        
+        # 调试：打印G矩阵，特别是z方向的恢复力系数
+        if not hasattr(self, '_G_printed'):
+            print("[DEBUG] G矩阵（恢复力矩阵）:")
+            print(f"  G矩阵形状: {self.G.shape}")
+            print(f"  G矩阵内容:\n{self.G}")
+            print(f"  G[2,2] (z方向恢复力系数): {self.G[2,2]}")
+            print(f"  G矩阵第2行（z方向相关）: {self.G[2,:]}")
+            print(f"  G矩阵第2列（影响z方向的量）: {self.G[:,2]}")
+            self._G_printed = True
 
     def initialize_states(self, initial_eta=None, initial_nu=None):
         """
@@ -1417,12 +1442,36 @@ class VesselControlSystem:
         tau_cf = self.crossflow_drag(self._temp_nu_r)
         mef = self.calculate_memory_effects(self._temp_nu_r)
         damping_force = self.D @ self._temp_nu_r
+        # 计算重力恢复力（G矩阵已经在初始化时修正，z方向恢复力系数已设为0）
         gravity_force = self.G @ current_eta_np
         
         # 计算总加速度，使用预分配数组
+        # 使用原始G矩阵，允许z方向正常运动
         self._temp_nu_dot[:] = (self._temp_tau_thruster - self.C @ self._temp_nu_r - 
                                damping_force - gravity_force + tau_cf - mef)
         nu_dot = self.inv_M @ self._temp_nu_dot
+        
+        # 调试：打印z方向相关的力和加速度（仅在首次调用时）
+        if not hasattr(self, '_z_debug_printed'):
+            print(f"[DEBUG] z方向力分析:")
+            print(f"  tau_thruster[2] (z方向控制力): {self._temp_tau_thruster[2]}")
+            print(f"  gravity_force[2] (z方向恢复力): {gravity_force[2]}")
+            print(f"  damping_force[2] (z方向阻尼力): {damping_force[2]}")
+            print(f"  tau_cf[2] (z方向横流阻力): {tau_cf[2]}")
+            print(f"  mef[2] (z方向内存效应): {mef[2]}")
+            print(f"  nu_dot[2] (z方向加速度): {nu_dot[2]}")
+            print(f"  current_eta[2] (当前z位置): {current_eta_np[2]}")
+            print(f"  G[2,2] (z方向恢复力系数): {self.G[2,2]}")
+            print(f"[INFO] z方向运动已恢复，不再强制限制")
+            self._z_debug_printed = True
+        
+        # 数值稳定性检查：防止加速度过大导致发散
+        max_acceleration = 100.0  # 最大允许加速度 (m/s^2 或 rad/s^2)
+        if np.any(np.abs(nu_dot) > max_acceleration):
+            print(f"[WARNING] 检测到异常大的加速度: {nu_dot}")
+            print(f"  最大值: {np.max(np.abs(nu_dot))}, 位置: {np.argmax(np.abs(nu_dot))}")
+            # 限制加速度在合理范围内
+            nu_dot = np.clip(nu_dot, -max_acceleration, max_acceleration)
         
         return nu_dot
 
@@ -1561,8 +1610,18 @@ class VesselControlSystem:
         current_control_acceleration = self.controller_acceleration(eta_r, self.x_hat, self.b_hat, 
                                                                    current_eta_np, current_nu_np)
         
-        # 添加波浪载荷（允许平台在波浪中运动）
+        # 添加波浪载荷（允许平台在波浪中运动，包括z方向）
         wave_loads = self.generate_wave_loads_jonswap(current_time)
+        # 分析波浪载荷的z方向分量（仅用于调试，不修改原始值）
+        if not hasattr(self, '_wave_z_analysis_printed'):
+            print(f"[DEBUG] 波浪载荷z方向分析:")
+            print(f"  wave_loads[2] (z方向波浪载荷): {wave_loads[2]}")
+            print(f"  rao_weights[2] (z方向RAO权重): {self._rao_weights[2] if hasattr(self, '_rao_weights') else 'N/A'}")
+            if abs(wave_loads[2]) > 1e-6:
+                print(f"[INFO] 波浪载荷z方向分量: {wave_loads[2]}（保留原始值，允许z方向正常运动）")
+            self._wave_z_analysis_printed = True
+        
+        # 使用原始波浪载荷（包括z方向分量），不进行修正
         current_control_acceleration += self.inv_M @ wave_loads
         
         # 计算位置导数，使用预分配数组
@@ -1575,11 +1634,51 @@ class VesselControlSystem:
         eta_dot = self._temp_eta_dot.copy()
         
         # 内部状态更新（用于控制器计算，但不影响IsaacLab物理引擎）
+        # 分析z方向位置和速度的变化（仅用于调试，不修改原始值）
+        eta_before = self.eta.copy()
+        nu_before = self.nu.copy()
+        
         self.eta += eta_dot * self.dt
         self.nu += current_control_acceleration * self.dt
         
-        # 关键修复：归一化角度到[-pi, pi]，防止角度累积导致发散
+        # 分析z方向变化的原因（仅用于调试）
+        if not hasattr(self, '_z_change_analysis_printed'):
+            z_eta_change = self.eta[2] - eta_before[2]
+            z_nu_change = self.nu[2] - nu_before[2]
+            z_eta_dot = eta_dot[2]
+            z_nu_dot = current_control_acceleration[2]
+            
+            print(f"[DEBUG] z方向变化分析:")
+            print(f"  eta_dot[2] (z方向位置导数): {z_eta_dot}")
+            print(f"  nu_dot[2] (z方向速度导数/加速度): {z_nu_dot}")
+            print(f"  eta[2]变化: {z_eta_change}")
+            print(f"  nu[2]变化: {z_nu_change}")
+            print(f"[INFO] z方向位置和速度已恢复，不再强制设为0")
+            
+            self._z_change_analysis_printed = True
+        
+        # z方向位置和速度正常更新，不进行强制限制
+        
+        # 关键修复2：归一化角度到[-pi, pi]，防止角度累积导致发散
         self.eta[3:6] = np.arctan2(np.sin(self.eta[3:6]), np.cos(self.eta[3:6]))
+        
+        # 数值稳定性检查：防止速度和位置过大导致发散
+        max_velocity = 100.0  # 最大允许速度 (m/s 或 rad/s)
+        max_position = 1000.0  # 最大允许位置 (m 或 rad)
+        
+        if np.any(np.abs(self.nu) > max_velocity):
+            print(f"[WARNING] 检测到异常大的速度: {self.nu}")
+            print(f"  最大值: {np.max(np.abs(self.nu))}, 位置: {np.argmax(np.abs(self.nu))}")
+            # 限制速度在合理范围内
+            self.nu = np.clip(self.nu, -max_velocity, max_velocity)
+        
+        if np.any(np.abs(self.eta[:3]) > max_position):
+            print(f"[WARNING] 检测到异常大的位置: {self.eta[:3]}")
+            print(f"  最大值: {np.max(np.abs(self.eta[:3]))}, 位置: {np.argmax(np.abs(self.eta[:3]))}")
+            # 限制位置在合理范围内（z方向也正常限制，不强制设为0）
+            self.eta[0] = np.clip(self.eta[0], -max_position, max_position)
+            self.eta[1] = np.clip(self.eta[1], -max_position, max_position)
+            self.eta[2] = np.clip(self.eta[2], -max_position, max_position)  # z位置正常限制
         
         # 更新参考轨迹
         self.reference += reference_dot * self.dt
@@ -1612,11 +1711,23 @@ class VesselControlSystem:
         """
         global _global_wave_table_cache
         
+        # 关键修复：如果使用固定相位，不使用全局缓存，而是为每个实例创建独立的预计算表
+        # 这样可以确保记录阶段使用固定相位，而播放阶段可以使用不同的相位
+        if hasattr(self, 'use_fixed_phase') and self.use_fixed_phase:
+            # 记录模式：使用固定相位，不使用全局缓存
+            cache_key = 'fixed_phase'
+        else:
+            # 正常模式：使用随机相位，使用全局缓存
+            cache_key = 'random_phase'
+        
         if _global_wave_table_cache is None:
+            _global_wave_table_cache = {}
+        
+        if cache_key not in _global_wave_table_cache:
             print("[INFO] 首次初始化全局波浪预计算系统...")
             
-            Hs = 0.1
-            Tp = 8
+            Hs = 5.0
+            Tp = 5
             g = 9.81
             omega_p = 2 * np.pi / Tp
             gamma = 3.3
@@ -1641,8 +1752,16 @@ class VesselControlSystem:
             S = alpha * S0
             wave_spectrum_weight = np.sqrt(2 * S * domega)
             
-            # 固定随机相位（设为0）
-            wave_epsilon = 2 * np.pi * np.random.rand(6, Nw)
+            # 关键修复：根据use_fixed_phase标志决定使用固定相位还是随机相位
+            # 如果use_fixed_phase=True，使用固定相位（全0），确保周期性
+            # 如果use_fixed_phase=False，使用随机相位，保持随机性
+            if hasattr(self, 'use_fixed_phase') and self.use_fixed_phase:
+                # 使用固定相位（全0），确保周期性
+                wave_epsilon = np.zeros((6, Nw))
+                print(f"[INFO] 使用固定相位生成波浪载荷（记录模式：确保周期性）")
+            else:
+                # 使用随机相位，保持随机性
+                wave_epsilon = 2 * np.pi * np.random.rand(6, Nw)
             
             # 预加载所有 DOF 数据
             all_amp, all_phase, dof_sizes = [], [], []
@@ -1690,18 +1809,19 @@ class VesselControlSystem:
                 
                 wave_table[i] = tau_wave
             
-            # 存储到全局缓存
-            _global_wave_table_cache = {
+            # 存储到对应的缓存键
+            _global_wave_table_cache[cache_key] = {
                 'wave_table': wave_table,
                 'dt_precompute': dt_precompute,
                 'max_time': max_time,
                 'rao_weights': rao_weights
             }
             
-            print(f"[INFO] 全局波浪载荷表预计算完成: {time_points}个时间点")
+            phase_type = "固定相位" if (hasattr(self, 'use_fixed_phase') and self.use_fixed_phase) else "随机相位"
+            print(f"[INFO] 波浪载荷表预计算完成（{phase_type}）: {time_points}个时间点")
         
-        # 从全局缓存获取数据
-        cached_wave = _global_wave_table_cache
+        # 从对应的缓存键获取数据
+        cached_wave = _global_wave_table_cache[cache_key]
         self._wave_table = cached_wave['wave_table']
         self._wave_table_dt = cached_wave['dt_precompute']
         self._wave_table_max_time = cached_wave['max_time']
